@@ -20,17 +20,41 @@ import { h } from "./dom.js";
 import { state } from "./state.js";
 
 /** @typedef {"loading"|"playing"|"paused"|"ended"|"dead"} ReadAloudPhase */
-
+/** @type {AudioContext|null} */
+let sharedAudioContext = null;
+/** @type {Set<(context: AudioContext) => void>} */
+const audioUnlockWaiters = new Set();
+/** Create/revive the page output only from a captured user activation. */
+function unlockSharedAudioContext() {
+  if (!sharedAudioContext || sharedAudioContext.state === 'closed') sharedAudioContext = new AudioContext();
+  const ctx = sharedAudioContext;
+  const ready = ctx.state === 'running' ? Promise.resolve() : ctx.resume().catch(() => {});
+  void ready.then(() => {
+    if (ctx.state !== 'running' || sharedAudioContext !== ctx) return;
+    for (const resolve of audioUnlockWaiters) resolve(ctx);
+    audioUnlockWaiters.clear();
+    transport?.adoptSharedContext();
+  });
+  return ctx;
+}
+/** Wait for the next captured user activation; never create output from a timer. */
+function waitForPageAudioContext() {
+  if (sharedAudioContext?.state === 'running') return Promise.resolve(sharedAudioContext);
+  return new Promise(resolve => audioUnlockWaiters.add(resolve));
+}
 // ---------------------------------------------------------------------------
 // The transport. Owns one AudioContext and a growing list of mono PCM segments;
 // schedules Web Audio buffer sources from the play frontier and re-anchors on
 // underrun so the playhead clock stays honest.
 
 export class AudioTransport {
-  /** @param {{context?: AudioContext, requestId?: string, stallSeconds?: number, watchdogMs?: number, contextCloseTimeoutMs?: number, minClockAdvanceSeconds?: number, maxStalledRebuilds?: number}} [options] */
-  constructor({ context, requestId = crypto.randomUUID(), stallSeconds = 2, watchdogMs = 1000, contextCloseTimeoutMs = 3000, minClockAdvanceSeconds = 0.5, maxStalledRebuilds = 2 } = {}) {
+  /** @param {{context?: AudioContext, sharedContext?: boolean, requestId?: string, stallSeconds?: number, watchdogMs?: number, contextCloseTimeoutMs?: number, minClockAdvanceSeconds?: number, maxStalledRebuilds?: number}} [options] */
+  constructor({ context, sharedContext = false, requestId = crypto.randomUUID(), stallSeconds = 2, watchdogMs = 1000, contextCloseTimeoutMs = 3000, minClockAdvanceSeconds = 0.5, maxStalledRebuilds = 2 } = {}) {
     /** @type {AudioContext} */
     this.ctx = context ?? new AudioContext();
+    // Page players opt into the singleton; direct transports remain
+    // independently constructible for embedding and transport-level tests.
+    this._usesSharedContext = sharedContext;
     this.requestId = requestId;
     /** @type {WeakMap<AudioBufferSourceNode, string>} */
     this.sourceRequests = new WeakMap();
@@ -99,6 +123,7 @@ export class AudioTransport {
     this.outputSample = { state: this.ctx.state, ctxTime: this.ctx.currentTime, wallTime: performance.now(), outputLatency: this.ctx.outputLatency ?? 0, cursor: this.frontier };
     this._destroyed = false;
     this._resumeSeq = 0;
+    this._awaitingAudioUnlock = false;
     this._bindContextState();
     this._mediaDevices = navigator.mediaDevices;
     this._onDeviceChange = () => { void this.rebuildDeadOutput(); };
@@ -112,6 +137,10 @@ export class AudioTransport {
       if (this.ctx !== ctx || this._destroyed || this._migrating || !this.playing || this.userPaused) return;
       if (ctx.state === 'running') {
         this._pump();
+        return;
+      }
+      if (ctx.state === 'suspended' && this._usesSharedContext) {
+        this._status('waiting for audio unlock');
         return;
       }
       void this.rebuildDeadOutput();
@@ -133,19 +162,39 @@ export class AudioTransport {
     if (this._destroyed || this._migrating || !this.playing || this.userPaused) return;
     const ctx = this.ctx;
     this._dropForeignSources();
-    if (ctx.state === 'running' && !reschedule) return;
-    if (ctx.state === 'closed') { void this.rebuildDeadOutput(); return; }
-    this._status(`${reason} — ${ctx.state === 'running' ? 'rescheduling' : 'resume pending; click to enable audio'}`);
+    if (ctx.state === 'running') {
+      if (reschedule) this.play(Math.round(this.currentTime * this.sampleRate));
+      return;
+    }
+    // Only the page-level captured pointer/keyboard handler resumes shared
+    // output. Standalone transports preserve their explicit recover() API.
+    if (this._usesSharedContext) {
+      this._status('waiting for audio unlock');
+      return;
+    }
+    this._status(`${reason} — resume pending; click to enable audio`);
     const seq = ++this._resumeSeq;
     void ctx.resume().then(() => {
-      if (this._destroyed || this.ctx !== ctx || seq !== this._resumeSeq || !this.playing || this.userPaused) return;
-      if (ctx.state !== 'running') return; // Browser policy may resolve without granting output.
+      if (this._destroyed || this.ctx !== ctx || seq !== this._resumeSeq || !this.playing || this.userPaused || ctx.state !== 'running') return;
       if (reschedule) this.play(Math.round(this.currentTime * this.sampleRate));
       else this._pump();
     }).catch((error) => {
       if (this._destroyed || this.ctx !== ctx || seq !== this._resumeSeq || !this.playing) return;
       this._status(`${reason} — ${error instanceof Error ? error.message : String(error)}; click to retry`);
     });
+  }
+  /** Adopt the page context after its next captured user activation. */
+  adoptSharedContext() {
+    const ctx = sharedAudioContext;
+    if (this._destroyed || !ctx || ctx.state !== 'running') return;
+    if (this.ctx !== ctx) {
+      this.ctx.onstatechange = null;
+      this.ctx = ctx;
+      this.rebuilds++;
+      this._bindContextState();
+    }
+    this._awaitingAudioUnlock = false;
+    if (this.playing && !this.userPaused) this.play(this.pausedSample);
   }
 
   _startWatchdog() {
@@ -168,6 +217,10 @@ export class AudioTransport {
     this.outputSample = { state: this.ctx.state, ctxTime, wallTime: now,
       outputLatency: this.ctx.outputLatency ?? 0, cursor: this.frontier };
     this.onStatus?.();
+    if (this.ctx.state === 'suspended' && this._usesSharedContext) {
+      this._status('waiting for audio unlock');
+      return;
+    }
     if (this.ctx.state !== 'running') { void this.rebuildDeadOutput(); return; }
     // No scheduled PCM → download underrun, not dead output.
     if (!this.sources.size && this.frontier >= this.total) {
@@ -198,7 +251,7 @@ export class AudioTransport {
   }
 
   async rebuildDeadOutput() {
-    if (this._destroyed || this._migrating || !this.playing || this.userPaused) return;
+    if (this._destroyed || this._migrating || this._awaitingAudioUnlock || !this.playing || this.userPaused) return;
     if (this.stalledRebuilds >= this.maxStalledRebuilds) { this._deadOutput(); return; }
     this.stalledRebuilds++;
     await this.migrateContext(true);
@@ -419,6 +472,41 @@ export class AudioTransport {
     try {
       this._stopSources();
       const ctx = this.ctx;
+      if (!this._usesSharedContext) {
+        ctx.onstatechange = null;
+        /** @type {ReturnType<typeof setTimeout>|undefined} */
+        let deadline;
+        try {
+          await Promise.race([
+            ctx.close().catch(error => { if (ctx.state !== 'closed') throw error; }),
+            new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Audio output rebind timed out')), this.contextCloseTimeoutMs); }),
+          ]);
+        } finally { clearTimeout(deadline); }
+        if (this._destroyed) return;
+        this.ctx = new AudioContext();
+        this.rebuilds++;
+        if (deadOutput) console.info(`read-aloud: output dead → context rebuilt (#${this.rebuilds})`);
+        this._bindContextState();
+        this._migrating = false;
+        if (this.playing && !this.userPaused) this.play(this.pausedSample);
+        return;
+      }
+      // A healthy page context is already activation-unlocked. Reuse it rather
+      // than replacing it from a device/watchdog callback outside that gesture.
+      if (sharedAudioContext?.state === 'running') {
+        if (ctx !== sharedAudioContext) {
+          ctx.onstatechange = null;
+          this.ctx = sharedAudioContext;
+          this._bindContextState();
+        }
+        this._migrating = false;
+        if (this.playing && !this.userPaused) this.play(this.pausedSample);
+        return;
+      }
+      if (ctx.state === 'suspended') {
+        this._status('waiting for audio unlock');
+        return;
+      }
       ctx.onstatechange = null;
       /** @type {ReturnType<typeof setTimeout>|undefined} */
       let deadline;
@@ -429,15 +517,13 @@ export class AudioTransport {
         ]);
       } finally { clearTimeout(deadline); }
       if (this._destroyed) return;
-      this.ctx = new AudioContext();
-      this.rebuilds++;
-      if (deadOutput) console.info(`read-aloud: output dead → context rebuilt (#${this.rebuilds})`);
-      this._bindContextState();
-      this._migrating = false;
-      if (this.playing && !this.userPaused) this.play(this.pausedSample);
+      // Constructing a replacement here would be outside user activation and
+      // Safari/Chromium suspend it. The next captured gesture creates it and
+      // calls adoptSharedContext() synchronously.
+      this._awaitingAudioUnlock = true;
+      this._status('waiting for audio unlock');
+      if (deadOutput) console.info('read-aloud: output closed — waiting for audio unlock');
     } catch (error) {
-      // Never leave this.ctx closed and silent: the old context is dead, a new
-      // one could not be built. Say so instead of freezing the playhead.
       this.playing = false;
       this._armed = false;
       this._stopWatchdog();
@@ -484,12 +570,16 @@ let activeEventId = "";
 let activeOptions = {};
 /** @type {{workspaceId: string, roomId: string}|null} */
 let activeOrigin = null;
-// All input stays browser-owned; paused/ended transports are never auto-resumed.
-for (const event of ['pointerdown', 'keydown', 'touchend', 'click', 'focus']) {
-  window.addEventListener?.(event, () => { transport?.recover(event); updatePlayerUi(); }, { capture: true, passive: true });
+// Capture activation before any play-button handler. One page context survives
+// every message; a replacement after close is also born inside this gesture.
+for (const event of ['pointerdown', 'keydown']) {
+  window.addEventListener?.(event, () => {
+    unlockSharedAudioContext();
+    updatePlayerUi();
+  }, { capture: true, passive: true });
 }
 window.addEventListener?.('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { transport?.recover('tab visible'); updatePlayerUi(); }
+  if (document.visibilityState === 'visible') updatePlayerUi();
 });
 
 /** @param {ReadAloudPhase} phase */
@@ -527,7 +617,7 @@ export function stopReadAloud() {
     transport.onEnded = null;
     transport.onFirstAudio = null;
     transport.onError = null;
-    transport.destroy();
+    transport.destroy(false);
     transport = null;
   }
   activeEventId = "";
@@ -558,7 +648,7 @@ export async function startReadAloud(eventId, regenerate = false, playbackOrigin
 
   /** @type {AudioTransport} */
   let t;
-  try { t = new AudioTransport(); }
+  try { t = new AudioTransport({ context: await waitForPageAudioContext(), sharedContext: true }); }
   catch (error) { stopReadAloud(); setError(error); return; }
   transport = t;
   t.onStatus = updatePlayerUi;

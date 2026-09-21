@@ -52,7 +52,7 @@ const pcm = (n: number): Float32Array => new Float32Array(n).fill(0.1);
 
 beforeAll(async () => {
   const g = globalThis as Record<string, unknown>;
-  g.window ??= {};
+  g.window = new EventTarget();
   g.AudioContext = FakeContext;
   const mod = await import("../web/src/readaloud.js");
   AudioTransport = (mod as Record<string, unknown>).AudioTransport;
@@ -291,6 +291,46 @@ test('autoplay-blocked PCM remains unscheduled until output is actually running'
   ctx.setState('running');grant();await flush();expect(t.sources.size).toBe(1);expect(t.frontier).toBe(16000);
 });
 
+test('captured gesture unlocks one shared context; later players reuse it without resume-pending status', async () => {
+  contexts=[];
+  (window as EventTarget).dispatchEvent(new Event('pointerdown'));
+  await flush();
+  const ctx = contexts[0] as FakeContext;
+  expect(ctx).toBeDefined();
+  expect(ctx.state).toBe('running');
+  const first = new AudioTransport({ context: ctx, sharedContext: true }); transports.push(first);
+  first.setFormat(16000, 1); first.play(); first.append(pcm(16000), first.requestId);
+  expect(first.status).not.toContain('resume pending');
+  first.destroy(false);
+  const second = new AudioTransport({ context: ctx, sharedContext: true }); transports.push(second);
+  second.setFormat(16000, 1); second.play(); second.append(pcm(16000), second.requestId);
+  expect(contexts).toHaveLength(1);
+  expect(second.ctx).toBe(ctx);
+  expect(second.status).not.toContain('resume pending');
+  second.destroy();
+});
+test('migration reuses a running shared context instead of constructing another', async () => {
+  contexts=[]; (window as EventTarget).dispatchEvent(new Event('pointerdown')); await flush();
+  const ctx = contexts[0] as FakeContext;
+  const t = new AudioTransport({ context: ctx, sharedContext: true }); transports.push(t);
+  t.setFormat(16000, 1); t.play(); t.append(pcm(16000), t.requestId);
+  await t.migrateContext(true);
+  expect(contexts).toHaveLength(1);
+  expect(t.ctx).toBe(ctx);
+  expect(t.rebuilds).toBe(0);
+});
+test('suspended shared context with no buffered PCM waits for unlock without rebuilding', async () => {
+  contexts=[]; (window as EventTarget).dispatchEvent(new Event('pointerdown')); await flush();
+  const ctx = contexts[0] as FakeContext; ctx.state = 'suspended';
+  const t = new AudioTransport({ context: ctx, sharedContext: true }); transports.push(t);
+  t.play();
+  t.checkProgress(t._lastProgressAt + 10_000);
+  await flush();
+  expect(contexts).toHaveLength(1);
+  expect(t.rebuilds).toBe(0);
+  expect(t.status).toBe('waiting for audio unlock');
+  expect(ctx.state).toBe('suspended');
+});
 test('two consecutive frozen replacements → terminal dead status; no third rebuild or rearm', async () => {
   const {t,ctx}=armed();t.append(pcm(160000), t.requestId);ctx.currentTime=2.08;
   t.checkProgress(t._lastProgressAt+2001);
