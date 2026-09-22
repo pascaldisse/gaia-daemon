@@ -25,6 +25,18 @@ class FakeSource {
   end(): void { const cb = this.onended; this.onended = null; cb?.(); }
 }
 
+/** Fake AnalyserNode: `energy` (settable per-test) drives getFloatTimeDomainData
+ * so tests can simulate real silence independently of ctx.currentTime/state —
+ * default 1 (loud) keeps every pre-existing test's source "audible" so the new
+ * silence watchdog never fires unless a test deliberately sets energy = 0. */
+class FakeAnalyser {
+  fftSize = 256;
+  energy = 1;
+  connect(): void {}
+  disconnect(): void {}
+  getFloatTimeDomainData(buf: Float32Array): void { buf.fill(this.energy); }
+}
+
 class FakeContext {
   state = "running";
   currentTime = 0;
@@ -40,6 +52,7 @@ class FakeContext {
     return { length, getChannelData: () => data };
   }
   createBufferSource(): FakeSource { const src = new FakeSource(); this.sources.push(src); return src; }
+  createAnalyser(): FakeAnalyser { return new FakeAnalyser(); }
   resumes = 0;
   resume(): Promise<void> { this.resumes++; this.state = "running"; return Promise.resolve(); }
   close(): Promise<void> { this.state = "closed"; return Promise.resolve(); }
@@ -444,4 +457,37 @@ test("A frozen → B starts → old resume/decode cannot emit A; stopped nodes d
   await b.rebuildDeadOutput();
   expect(live[0].disconnected).toBe(true); expect(live[0].buffer).toBeNull();
   expect([...b._read(0, b.total)]).toEqual([...new Float32Array(16000).fill(-0.5)]);
+});
+
+test('silent output while the clock advances normally → rebuild without waiting for a stalled clock; recovers audibly (09-22 device-switch)', async () => {
+  const { t, ctx } = armed();
+  t.append(pcm(160000), t.requestId);
+  (t.analyser as FakeAnalyser).energy = 0; // dead route: ctx keeps ticking, nothing reaches hardware
+  const base = t._lastProgressAt;
+  ctx.currentTime = 1; // clock advancing normally — the stall/advance check alone would call this healthy
+  t.checkProgress(base + 100);
+  expect(contexts).toHaveLength(1); // silence window (default 3s) not elapsed yet
+  expect(t.rebuilds).toBe(0);
+  ctx.currentTime = 2;
+  t.checkProgress(base + 100 + t.silenceSeconds * 1000 + 1);
+  await flush();
+  expect(contexts).toHaveLength(2);
+  expect(ctx.state).toBe('closed');
+  expect(t.rebuilds).toBe(1);
+  expect(t.status).not.toBe('audio dead — click ⏴'); // one clean rebuild, not terminal
+  expect(t.recovered).toBe(false); // not yet confirmed audible on the new context
+  // Recovery: the rebuilt context is live and audible again → visible badge.
+  t.ctx.currentTime = 1;
+  t.checkProgress(t._lastProgressAt + t.stallSeconds * 1000 + 1);
+  expect(t.recovered).toBe(true);
+});
+
+test('silence detector ignores a genuine download underrun (nothing scheduled) and a user pause', async () => {
+  const { t } = armed();
+  (t.analyser as FakeAnalyser).energy = 0;
+  t.checkProgress(t._lastProgressAt + 10000); // no PCM appended — sources.size === 0
+  expect(t.rebuilds).toBe(0);
+  t.append(pcm(16000), t.requestId); t.pause();
+  t.checkProgress(t._lastProgressAt + 10000); // paused — checkProgress no-ops entirely
+  expect(t.rebuilds).toBe(0);
 });

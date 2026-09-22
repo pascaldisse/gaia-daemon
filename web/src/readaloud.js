@@ -48,8 +48,8 @@ function waitForPageAudioContext() {
 // underrun so the playhead clock stays honest.
 
 export class AudioTransport {
-  /** @param {{context?: AudioContext, sharedContext?: boolean, requestId?: string, stallSeconds?: number, watchdogMs?: number, contextCloseTimeoutMs?: number, minClockAdvanceSeconds?: number, maxStalledRebuilds?: number}} [options] */
-  constructor({ context, sharedContext = false, requestId = crypto.randomUUID(), stallSeconds = 2, watchdogMs = 1000, contextCloseTimeoutMs = 3000, minClockAdvanceSeconds = 0.5, maxStalledRebuilds = 2 } = {}) {
+  /** @param {{context?: AudioContext, sharedContext?: boolean, requestId?: string, stallSeconds?: number, watchdogMs?: number, contextCloseTimeoutMs?: number, minClockAdvanceSeconds?: number, maxStalledRebuilds?: number, silenceSeconds?: number, silenceThreshold?: number}} [options] */
+  constructor({ context, sharedContext = false, requestId = crypto.randomUUID(), stallSeconds = 2, watchdogMs = 1000, contextCloseTimeoutMs = 3000, minClockAdvanceSeconds = 0.5, maxStalledRebuilds = 2, silenceSeconds = 3, silenceThreshold = 0.0015 } = {}) {
     /** @type {AudioContext} */
     this.ctx = context ?? new AudioContext();
     // Page players opt into the singleton; direct transports remain
@@ -108,6 +108,25 @@ export class AudioTransport {
     this.contextCloseTimeoutMs = Number.isFinite(contextCloseTimeoutMs) && contextCloseTimeoutMs > 0 ? contextCloseTimeoutMs : 3000;
     this.minClockAdvanceSeconds = Number.isFinite(minClockAdvanceSeconds) && minClockAdvanceSeconds > 0 ? minClockAdvanceSeconds : 0.5;
     this.maxStalledRebuilds = Number.isFinite(maxStalledRebuilds) && maxStalledRebuilds > 0 ? Math.floor(maxStalledRebuilds) : 2;
+    // Real-output liveness: ctx.currentTime can advance normally into a dead
+    // route (see migrateContext's comment) — sustained near-silence while
+    // sources are actively scheduled is the one signal a clock check cannot
+    // see. Default threshold is well below any real speech/silence floor;
+    // default window is longer than any natural TTS pause.
+    this.silenceSeconds = Number.isFinite(silenceSeconds) && silenceSeconds > 0 ? silenceSeconds : 3;
+    this.silenceThreshold = Number.isFinite(silenceThreshold) && silenceThreshold > 0 ? silenceThreshold : 0.0015;
+    /** @type {AnalyserNode|null} */
+    this.analyser = null;
+    /** @type {Float32Array<ArrayBuffer>|null} */
+    this._silenceBuf = null;
+    /** @type {number|null} wall time (ms) the current silent run started */
+    this._silentSinceAt = null;
+    /** True for a few seconds right after a rebuild proves audible again. */
+    this.recovered = false;
+    /** A rebuild is in flight/just landed; the next confirmed-healthy tick sets `recovered`. */
+    this._recoverPending = false;
+    /** @type {ReturnType<typeof setTimeout>|null} */
+    this._recoveredTimer = null;
     this.rebuilds = 0;
     this.stalledRebuilds = 0;
     this.outputDead = false;
@@ -145,6 +164,32 @@ export class AudioTransport {
       }
       void this.rebuildDeadOutput();
     };
+    // Every scheduled source routes through this analyser instead of straight
+    // to destination so checkProgress can verify AUDIBLE energy independently
+    // of ctx.currentTime. Recreated on every context swap (construction,
+    // migrateContext, adoptSharedContext) — an analyser cannot outlive its ctx.
+    try {
+      this.analyser = ctx.createAnalyser();
+      this.analyser.fftSize = 256;
+      this.analyser.connect(ctx.destination);
+      this._silenceBuf = /** @type {Float32Array<ArrayBuffer>} */ (new Float32Array(this.analyser.fftSize));
+    } catch {
+      // No AnalyserNode support (unlikely) → silence detection degrades to a
+      // no-op; the existing clock-stall watchdog still covers frozen contexts.
+      this.analyser = null;
+      this._silenceBuf = null;
+    }
+    this._silentSinceAt = null;
+  }
+
+  /** RMS of the analyser's live time-domain buffer, or null with no analyser.
+   * @returns {number|null} */
+  _sampleOutputEnergy() {
+    if (!this.analyser || !this._silenceBuf) return null;
+    this.analyser.getFloatTimeDomainData(this._silenceBuf);
+    let sum = 0;
+    for (let i = 0; i < this._silenceBuf.length; i++) { const v = this._silenceBuf[i]; sum += v * v; }
+    return Math.sqrt(sum / this._silenceBuf.length);
   }
 
   /** @param {string} reason */
@@ -222,6 +267,27 @@ export class AudioTransport {
       return;
     }
     if (this.ctx.state !== 'running') { void this.rebuildDeadOutput(); return; }
+    // Real-output check FIRST, independent of the clock-advance logic below:
+    // a healthy-looking ctx.currentTime can still be feeding a dead route (see
+    // migrateContext's comment — WebKit default-output reassignment without a
+    // devicechange event). Only meaningful while sources are actually
+    // scheduled; a download underrun with nothing scheduled is not silence.
+    if (this.sources.size > 0) {
+      const rms = this._sampleOutputEnergy();
+      if (rms !== null && rms < this.silenceThreshold) {
+        if (this._silentSinceAt === null) this._silentSinceAt = now;
+        if (now - this._silentSinceAt >= this.silenceSeconds * 1000) {
+          this._silentSinceAt = null;
+          console.info(`read-aloud: silent output while playing (rms<${this.silenceThreshold} for ${this.silenceSeconds}s) → rebuild`);
+          void this.rebuildDeadOutput();
+          return;
+        }
+      } else {
+        this._silentSinceAt = null;
+      }
+    } else {
+      this._silentSinceAt = null;
+    }
     // No scheduled PCM → download underrun, not dead output.
     if (!this.sources.size && this.frontier >= this.total) {
       this._lastCtxTime = ctxTime;
@@ -236,6 +302,18 @@ export class AudioTransport {
     if (advance < this.minClockAdvanceSeconds) { void this.rebuildDeadOutput(); return; }
     this.stalledRebuilds = 0;
     if (this.status) this._status('');
+    if (this._recoverPending) {
+      this._recoverPending = false;
+      this.recovered = true;
+      if (this._recoveredTimer !== null) clearTimeout(this._recoveredTimer);
+      this._recoveredTimer = setTimeout(() => {
+        this._recoveredTimer = null;
+        if (this._destroyed) return;
+        this.recovered = false;
+        this.onStatus?.();
+      }, 4000);
+      this.onStatus?.();
+    }
     this._maybeFinish();
   }
 
@@ -253,6 +331,7 @@ export class AudioTransport {
   async rebuildDeadOutput() {
     if (this._destroyed || this._migrating || this._awaitingAudioUnlock || !this.playing || this.userPaused) return;
     if (this.stalledRebuilds >= this.maxStalledRebuilds) { this._deadOutput(); return; }
+    this._recoverPending = true;
     this.stalledRebuilds++;
     await this.migrateContext(true);
   }
@@ -337,7 +416,7 @@ export class AudioTransport {
       const src = this.ctx.createBufferSource();
       src.buffer = buf;
       this.sourceRequests.set(src, this.requestId);
-      src.connect(this.ctx.destination);
+      src.connect(this.analyser ?? this.ctx.destination);
       src.start(startCtx);
       this.frontier = end;
       this.sources.add(src);
@@ -545,6 +624,8 @@ export class AudioTransport {
     this._stopWatchdog();
     this.ctx.onstatechange = null;
     this._mediaDevices?.removeEventListener?.("devicechange", this._onDeviceChange);
+    if (this._recoveredTimer !== null) { clearTimeout(this._recoveredTimer); this._recoveredTimer = null; }
+    try { this.analyser?.disconnect(); } catch { /* already disconnected */ }
     this._stopSources();
     this.segments = [];
     this.segStart = [];
@@ -834,6 +915,8 @@ let liveEl = null;
 /** @type {HTMLElement|null} */
 let recoveryEl = null;
 /** @type {HTMLElement|null} */
+let recoveredEl = null;
+/** @type {HTMLElement|null} */
 let diagEl = null;
 /** @type {HTMLElement|null} */
 let trackEl = null;
@@ -862,6 +945,7 @@ export function buildAudioPlayer() {
   // says "still generating" instead of letting a partial length look truncated.
   liveEl = h("span", { class: "ap-live", hidden: true, title: "still generating — the length grows until synthesis finishes" }, "⋯ live");
   recoveryEl = h("span", { class: "ap-recovery", role: "status", hidden: true });
+  recoveredEl = h("span", { class: "ap-recovered", role: "status", hidden: true, title: "audio output was rebuilt after a dead/silent route and is audible again" }, "\u2713 recovered");
   diagEl = h("span", { class: "ap-diag", hidden: true, title: "AudioContext state · ctxTime (s) · scheduled-sample cursor · rebuilds" });
   playerRoot = h(
     "div",
@@ -872,6 +956,7 @@ export function buildAudioPlayer() {
     durTimeEl,
     liveEl,
     recoveryEl,
+    recoveredEl,
     diagEl,
     h("button", { type: "button", class: "ap-regen", title: "regenerate audio (re-synthesize, replaces the cached clip)", text: "⟳", onclick: regenerateAudio }),
     h("button", { type: "button", class: "ap-stop", title: "close player", text: "✕", onclick: stopReadAloud }),
@@ -987,11 +1072,13 @@ function updatePlayerUi(overrideFrac) {
   if (!playerRoot || !toggleBtn || !curTimeEl || !durTimeEl || !liveEl || !playedEl || !thumbEl) return;
   if (!transport) {
     playerRoot.hidden = true;
+    if (recoveredEl) recoveredEl.hidden = true;
     return;
   }
   playerRoot.hidden = false;
   playerRoot.classList.toggle("audio-dead", transport.outputDead);
   if (recoveryEl) { recoveryEl.textContent = transport.status; recoveryEl.title = transport.status; recoveryEl.hidden = !transport.status; }
+  if (recoveredEl) recoveredEl.hidden = !transport.recovered;
   if (diagEl) {
     diagEl.hidden = localStorage.getItem("TTS_DIAG") !== "1";
     diagEl.title = `AudioContext state · ctxTime (s) · scheduled-sample cursor · rebuilds · request=${transport.requestId}`;
