@@ -20,6 +20,19 @@ import { h } from "./dom.js";
 import { state } from "./state.js";
 
 /** @typedef {"loading"|"playing"|"paused"|"ended"|"dead"} ReadAloudPhase */
+
+// Fired by the native shell (gaia-shell, src-tauri) when CoreAudio reports the
+// system default output device changed (e.g. speakers <-> AirPods). WebKit
+// keeps rendering into the device the AudioContext was born on and neither
+// the clock-stall nor analyser-RMS watchdog can see a hardware-level switch
+// (analyser sits upstream of ctx.destination — see _bindContextState below),
+// and `navigator.mediaDevices` 'devicechange' is gated on media-capture
+// permission in WebKit (never granted here, so it never fires; see MDN
+// MediaDevices: devicechange event — "the user must have granted permission
+// to use a media device" https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/devicechange_event).
+// One exported constant so the listener below and any dispatcher/test agree
+// on the wire string without duplicating it.
+export const OUTPUT_DEVICE_CHANGED_EVENT = "gaia:output-device-changed";
 /** @type {AudioContext|null} */
 let sharedAudioContext = null;
 /** @type {Set<(context: AudioContext) => void>} */
@@ -147,6 +160,12 @@ export class AudioTransport {
     this._mediaDevices = navigator.mediaDevices;
     this._onDeviceChange = () => { void this.rebuildDeadOutput(); };
     this._mediaDevices?.addEventListener?.("devicechange", this._onDeviceChange);
+    // Native (gaia-shell) CoreAudio-backed signal — see OUTPUT_DEVICE_CHANGED_EVENT
+    // above for why devicechange/analyser cannot cover a hardware output switch.
+    // rebuildDeadOutput() itself no-ops when !this.playing, so no separate guard
+    // is needed here (same shared path as _onDeviceChange).
+    this._onOutputDeviceChanged = () => { void this.rebuildDeadOutput(); };
+    window.addEventListener?.(OUTPUT_DEVICE_CHANGED_EVENT, this._onOutputDeviceChanged);
   }
 
   // State/device/watchdog failures → one bounded rebuild path; PCM retained.
@@ -624,6 +643,7 @@ export class AudioTransport {
     this._stopWatchdog();
     this.ctx.onstatechange = null;
     this._mediaDevices?.removeEventListener?.("devicechange", this._onDeviceChange);
+    window.removeEventListener?.(OUTPUT_DEVICE_CHANGED_EVENT, this._onOutputDeviceChanged);
     if (this._recoveredTimer !== null) { clearTimeout(this._recoveredTimer); this._recoveredTimer = null; }
     try { this.analyser?.disconnect(); } catch { /* already disconnected */ }
     this._stopSources();
