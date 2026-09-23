@@ -6,6 +6,7 @@ import { test, expect, beforeAll, afterEach } from "bun:test";
 
 /** @type {any} */
 let AudioTransport: any;
+let OUTPUT_DEVICE_CHANGED_EVENT: string;
 let ctxFailures = 0;
 let contexts: FakeContext[] = [];
 const transports: any[] = [];
@@ -69,6 +70,7 @@ beforeAll(async () => {
   g.AudioContext = FakeContext;
   const mod = await import("../web/src/readaloud.js");
   AudioTransport = (mod as Record<string, unknown>).AudioTransport;
+  OUTPUT_DEVICE_CHANGED_EVENT = (mod as Record<string, unknown>).OUTPUT_DEVICE_CHANGED_EVENT as string;
 });
 
 function armed(): { t: any; ctx: FakeContext } {
@@ -489,5 +491,35 @@ test('silence detector ignores a genuine download underrun (nothing scheduled) a
   expect(t.rebuilds).toBe(0);
   t.append(pcm(16000), t.requestId); t.pause();
   t.checkProgress(t._lastProgressAt + 10000); // paused — checkProgress no-ops entirely
+  expect(t.rebuilds).toBe(0);
+});
+
+// 2026-09-23: 3rd TTS-mute recurrence (whip 461). analyser sits upstream of
+// ctx.destination and mediaDevices 'devicechange' never fires in WebKit (no
+// getUserMedia grant) — neither watchdog can see a hardware output switch.
+// gaia-shell (src-tauri) now dispatches OUTPUT_DEVICE_CHANGED_EVENT on window
+// from a native CoreAudio kAudioHardwarePropertyDefaultOutputDevice listener.
+test('native output-device-changed event rebuilds while playing, no-ops while paused', async () => {
+  const { t } = armed();
+  t.append(pcm(160000), t.requestId); t.ctx.currentTime = 3.08;
+  window.dispatchEvent(new Event(OUTPUT_DEVICE_CHANGED_EVENT));
+  window.dispatchEvent(new Event(OUTPUT_DEVICE_CHANGED_EVENT));
+  await flush();
+  expect(t.rebuilds).toBe(1);
+  t.pause();
+  window.dispatchEvent(new Event(OUTPUT_DEVICE_CHANGED_EVENT));
+  await flush();
+  expect(t.rebuilds).toBe(1);
+  t.destroy();
+  window.dispatchEvent(new Event(OUTPUT_DEVICE_CHANGED_EVENT));
+  await flush();
+  expect(t.rebuilds).toBe(1);
+});
+
+test('native output-device-changed event while never playing does not rebuild', async () => {
+  const t = new AudioTransport();
+  transports.push(t);
+  window.dispatchEvent(new Event(OUTPUT_DEVICE_CHANGED_EVENT));
+  await flush();
   expect(t.rebuilds).toBe(0);
 });
