@@ -15,6 +15,7 @@ import { openTab } from "./tabs.js";
 import { hapticArm, holdTouchScroll, isTouchPointer, LONG_PRESS_MS, releaseTouchScroll, TOUCH_SLOP } from "./press-drag.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { NodeCache, setAttr, setClass, setText, syncChildren } from "./reconcile.js";
+import { visibleWithPinned } from "./pagination.js";
 import { openSearch } from "./search.js";
 import { openSettings } from "./settings.js";
 import {
@@ -421,7 +422,7 @@ function WorkspaceList() {
   const currentId = state.snapshot?.workspace.id;
   const focus = effectiveSidebarFocus();
   const all = state.workspaces;
-  const visible = all.slice(0, state.workspacesShown);
+  const visible = visibleWithPinned(all, state.workspacesShown, (workspace) => workspaceActivity(workspace.id).running);
   const current = all.find((workspace) => workspace.id === currentId);
   if (current && !visible.includes(current)) visible.push(current);
   const remaining = all.length - visible.length;
@@ -549,7 +550,7 @@ function RoomTree() {
   // a 100-chat history import must not flood the sidebar.
   const top = holdRoomOrder(childrenOf.get(null) ?? []);
   const filteredTop = state.roomsFavoritesOnly ? top.filter((room) => room.favorite || hasFavoriteDescendant(room, childrenOf)) : top;
-  const visible = filteredTop.slice(0, state.roomsShown);
+  const visible = visibleWithPinned(filteredTop, state.roomsShown, (room) => Boolean(room.running) || descendantActivity(room, childrenOf).running);
   const current = top.find((room) => room.isCurrent);
   if (!state.roomsFavoritesOnly && current && !visible.includes(current)) visible.push(current);
   const remaining = filteredTop.length - visible.length;
