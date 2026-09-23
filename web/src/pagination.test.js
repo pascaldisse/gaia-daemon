@@ -1,3 +1,5 @@
+// @ts-nocheck — bun:test types aren't in web/tsconfig's lib; not app code.
+// Run: bun test web/src/pagination.test.js
 import { expect, test } from "bun:test";
 import { visibleWithPinned } from "./pagination.js";
 
