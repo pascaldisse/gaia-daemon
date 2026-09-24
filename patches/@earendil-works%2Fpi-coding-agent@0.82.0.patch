@@ -1,0 +1,28 @@
+diff --git a/dist/core/remote-catalog-provider.js b/dist/core/remote-catalog-provider.js
+index 7d4439d37dbbeb11b9f27902936adb98c4372430..d1afc3927c5453d906570d2d34c2c0ae4d4fe5be 100644
+--- a/dist/core/remote-catalog-provider.js
++++ b/dist/core/remote-catalog-provider.js
+@@ -31,7 +31,12 @@ function remoteModels(entry, localGeneratedAt) {
+     if (!entry)
+         return [];
+     if (localGeneratedAt !== undefined && (entry.lastModified === undefined || entry.lastModified <= localGeneratedAt)) {
+-        return [];
++        // gaia patch: lastModified 0/undefined = server gave no freshness (404/501 or no header),
++        // not "older than builtin" -> keep a non-empty overlay while checkedAt is within the refresh interval.
++        const unknownFreshness = !entry.lastModified;
++        const recentlyChecked = entry.checkedAt !== undefined && Date.now() - entry.checkedAt < REMOTE_CATALOG_REFRESH_INTERVAL_MS;
++        if (!(unknownFreshness && recentlyChecked && entry.models.length > 0))
++            return [];
+     }
+     return entry.models;
+ }
+@@ -67,7 +72,8 @@ export function withRemoteCatalog(provider, catalogBaseUrl = DEFAULT_CATALOG_BAS
+                         return;
+                     const checkedAt = Date.now();
+                     if (response.status === 404 || response.status === 501) {
+-                        await context.store.write({ ...(stored ?? { models: [] }), checkedAt, lastModified: 0 });
++                        // gaia patch: a 404/501 carries no catalog -> never clobber a real stored lastModified with 0.
++                        await context.store.write({ ...(stored ?? { models: [] }), checkedAt, lastModified: stored?.lastModified || 0 });
+                         return;
+                     }
+                     if (!response.ok) {

@@ -41,5 +41,8 @@
     "knip": "^6.34.0",
     "typescript": "^5.7.3"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "patchedDependencies": {
+    "@earendil-works/pi-coding-agent@0.82.0": "patches/@earendil-works%2Fpi-coding-agent@0.82.0.patch"
+  }
 }
