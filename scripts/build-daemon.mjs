@@ -18,6 +18,7 @@ import {
 import { spawnSync } from "node:child_process";
 // Single source of truth shared with the /rebuild atomic swap (src/server/http.ts).
 import { BUNDLE_ASSET_DIRS, BUNDLE_ASSET_EXCLUDES } from "../src/core/bundle-assets.ts";
+import { BUNDLE_EXEC_MANIFEST_PACKAGE, resolvePackageManifest } from "../src/core/bundle-assets.ts";
 import { rebuildSourceRoot } from "../src/core/build-source.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -121,6 +122,16 @@ for (const name of BUNDLE_ASSET_DIRS) {
     renameSync(dstTmp, dstFinal);
   });
 }
+
+// pi resolves VERSION from <dirname(execPath)>/package.json in a compiled
+// binary (core/bundle-assets.ts BUNDLE_EXEC_MANIFEST_PACKAGE). Ship the linked
+// dep's real manifest verbatim → no hardcoded version, no 0.0.0 UA.
+timeStep("exec-manifest", () => {
+  const src = resolvePackageManifest(BUNDLE_EXEC_MANIFEST_PACKAGE, repoRoot);
+  const tmp = join(outDir, "package.json.new");
+  cpSync(src, tmp);
+  renameSync(tmp, join(outDir, "package.json"));
+});
 
 timeStep("write-source-json", () => {
   const git = (args) => {
