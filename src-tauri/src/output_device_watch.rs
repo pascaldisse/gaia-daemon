@@ -152,6 +152,8 @@ pub fn install_with_debounce(app: AppHandle, debounce_ms: u64) {
         eprintln!(
             "[gaia-shell] AudioObjectAddPropertyListenerBlock failed: OSStatus {status}"
         );
+    } else {
+        eprintln!("[gaia-shell] output-device-watch: installed");
     }
     // Leak intentionally: the block must outlive this function, for the life
     // of the app, and there is no matching `AudioObjectRemovePropertyListenerBlock`
