@@ -34,3 +34,6 @@ var/
 
 # Agent scratch space (never committed; see AGENTS.md workspace hygiene)
 .scratch/
+
+# connectome-memory live-proof scratch (never committed)
+scratch/
