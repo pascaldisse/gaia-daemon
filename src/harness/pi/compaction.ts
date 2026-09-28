@@ -327,7 +327,7 @@ export class PiCompaction {
           // neutral = the pre-connectome path, byte-for-byte.
           // No live model = no voice to write in; defer to the legacy path.
           if (config.summaryVoice !== "agent" || !ctx.model) return runCompactionFallback(event, ctx, provider, name);
-          return { compaction: await this.voiced(event, ctx, config) };
+          return { compaction: await this.voiced(event, ctx, config, () => pi.getThinkingLevel?.()) };
         }
         if (operation.kind === "apply")
           return {
@@ -363,7 +363,7 @@ export class PiCompaction {
           if (!ctx.model) throw new Error("no model set for compaction");
           const config = this.memoryConfig();
           if (config.summaryVoice === "agent") {
-            this.drafts.set(roomId, await this.voiced(event, ctx, config));
+            this.drafts.set(roomId, await this.voiced(event, ctx, config, () => pi.getThinkingLevel?.()));
             return { cancel: true };
           }
           const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
@@ -401,11 +401,16 @@ export class PiCompaction {
     event: { preparation: MechanicalCompactionInput; signal: AbortSignal },
     ctx: { model?: Model<any>; modelRegistry: Registry; getSystemPrompt?: () => string },
     config: CompactMemoryConfig,
+    sessionThinking: () => string | undefined = () => undefined,
   ): Promise<CompactionResult> {
     const registry = ctx.modelRegistry;
-    const fallback = ctx.model?.provider === COMPACT_FALLBACK_MODEL.provider
-      ? findModelWithAlias(registry, COMPACT_FALLBACK_MODEL.provider, COMPACT_FALLBACK_MODEL.name)
-      : undefined;
+    // Registry lookup failure must not abort the fold → self model only.
+    let fallback: Model<any> | undefined;
+    try {
+      fallback = ctx.model?.provider === COMPACT_FALLBACK_MODEL.provider
+        ? findModelWithAlias(registry, COMPACT_FALLBACK_MODEL.provider, COMPACT_FALLBACK_MODEL.name)
+        : undefined;
+    } catch { fallback = undefined; }
     const ordered = config.summaryModel === "self" ? [ctx.model, fallback] : [fallback, ctx.model];
     const models = ordered.filter((model, index, all): model is Model<any> =>
       Boolean(model) && all.findIndex((other) => other?.provider === model!.provider && other?.id === model!.id) === index);
@@ -418,6 +423,7 @@ export class PiCompaction {
     });
     return autobiographicalCompaction(event.preparation, {
       agentName: this.agentName, agentSystemPrompt, models, llm, config, signal: event.signal,
+      reasoning: config.summaryThinking === "session" ? safeCall(sessionThinking) : config.summaryThinking,
     });
   }
   private async session(roomId: string): Promise<PiSessionLike | undefined> {
@@ -494,4 +500,8 @@ export class PiCompaction {
       modifiedFiles: [...modified].sort(),
     };
   }
+}
+
+function safeCall<T>(fn: () => T): T | undefined {
+  try { return fn(); } catch { return undefined; }
 }

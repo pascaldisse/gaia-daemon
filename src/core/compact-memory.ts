@@ -5,6 +5,8 @@
 
 type CompactSummaryVoice = "agent" | "neutral";
 type CompactSummaryModel = "self" | "fallback";
+const THINKING = ["session", "off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+type CompactSummaryThinking = typeof THINKING[number];
 
 export interface CompactMemoryConfig {
   /** agent = first-person memory written by the agent (its own system prompt
@@ -36,6 +38,9 @@ export interface CompactMemoryConfig {
   indexLineChars: number;
   /** Output-token ceiling for the memory call. */
   maxOutputTokens: number;
+  /** Reasoning level of the memory call: session = the agent's live level
+   * (some models reject thinking-disabled outright, e.g. claude-opus-5-5). */
+  summaryThinking: CompactSummaryThinking;
 }
 
 export const COMPACT_MEMORY_DEFAULTS: CompactMemoryConfig = {
@@ -50,6 +55,7 @@ export const COMPACT_MEMORY_DEFAULTS: CompactMemoryConfig = {
   minWindowChars: 200,
   indexLineChars: 240,
   maxOutputTokens: 8_000,
+  summaryThinking: "session",
 };
 
 const isInt = (v: unknown, min: number): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= min;
@@ -69,5 +75,6 @@ export function parseCompactMemoryConfig(raw: unknown, base: CompactMemoryConfig
     minWindowChars: isInt(v.minWindowChars, 0) ? v.minWindowChars : base.minWindowChars,
     indexLineChars: isInt(v.indexLineChars, 40) ? v.indexLineChars : base.indexLineChars,
     maxOutputTokens: isInt(v.maxOutputTokens, 256) ? v.maxOutputTokens : base.maxOutputTokens,
+    summaryThinking: (THINKING as readonly unknown[]).includes(v.summaryThinking) ? v.summaryThinking as CompactSummaryThinking : base.summaryThinking,
   };
 }

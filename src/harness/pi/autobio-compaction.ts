@@ -316,7 +316,7 @@ function fileLists(fileOps: AutobioPreparation["fileOps"]): { readFiles: string[
 
 // ---------------------------------------------------------------- entry
 
-export type MemoryLlm = (model: Model<any>, request: VoicedRequest, options: { maxTokens: number; signal?: AbortSignal }) => Promise<string>;
+export type MemoryLlm = (model: Model<any>, request: VoicedRequest, options: { maxTokens: number; signal?: AbortSignal; reasoning?: string }) => Promise<string>;
 
 export interface AutobioDeps {
   agentName: string;
@@ -326,10 +326,43 @@ export interface AutobioDeps {
   llm: MemoryLlm;
   config?: CompactMemoryConfig;
   signal?: AbortSignal;
+  /** Resolved reasoning level ("off"/undefined = none requested). */
+  reasoning?: string;
 }
 
-/** One fold. Never throws on model failure: degrades mechanically, prefix intact. */
+/** One fold. NEVER throws: model failure → mechanical fold; any other
+ * failure (layout/parse) → last-resort fold that carries the previous
+ * prefix + index byte-identical. */
 export async function autobiographicalCompaction(preparation: AutobioPreparation, deps: AutobioDeps): Promise<CompactionResult> {
+  try {
+    return await foldOnce(preparation, deps);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`autobio-compaction: fold failed (${reason}); last-resort fold keeps prefix/index`);
+    return lastResortFold(preparation, deps.agentName, reason);
+  }
+}
+
+function lastResortFold(preparation: AutobioPreparation, agentName: string, reason: string): CompactionResult {
+  const previousSummary = preparation.previousSummary ?? "";
+  const prefix = section(previousSummary, PREFIX_OPEN, PREFIX_CLOSE)?.raw;
+  const indexBody = section(previousSummary, INDEX_OPEN, INDEX_CLOSE)?.body;
+  const index = indexBody ? indexBody.split("\n").filter((line) => line.trim()) : [];
+  const prior = memoryBlock(previousSummary, "detail") ?? memoryBlock(previousSummary, "coarse")
+    ?? (prefix || indexBody !== undefined ? undefined : stripFileTags(previousSummary).trim() || undefined);
+  const folded = (preparation.messagesToSummarize?.length ?? 0) + (preparation.turnPrefixMessages?.length ?? 0);
+  const detail = `(Mechanical fold — no recollection formed: ${reason.length > 240 ? `${reason.slice(0, 240)}…` : reason}. ${folded} messages folded; their raw record stays in the room transcript → recall it.)`;
+  let files = { readFiles: [] as string[], modifiedFiles: [] as string[], tags: "" };
+  try { files = fileLists(preparation.fileOps); } catch { /* keep empty */ }
+  return {
+    summary: assembleMemorySummary({ prefix, index, coarse: prior, detail, agentName, fileTags: files.tags }),
+    firstKeptEntryId: preparation.firstKeptEntryId,
+    tokensBefore: preparation.tokensBefore,
+    details: { readFiles: files.readFiles, modifiedFiles: files.modifiedFiles },
+  };
+}
+
+async function foldOnce(preparation: AutobioPreparation, deps: AutobioDeps): Promise<CompactionResult> {
   const config = deps.config ?? COMPACT_MEMORY_DEFAULTS;
   const previous = parseMemorySummary(preparation.previousSummary);
   const folded = [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages];
@@ -351,13 +384,14 @@ export async function autobiographicalCompaction(preparation: AutobioPreparation
     const failures: string[] = [];
     for (const model of deps.models) {
       try {
-        const text = await deps.llm(model, request, { maxTokens: config.maxOutputTokens, signal: deps.signal });
+        const text = await deps.llm(model, request, { maxTokens: config.maxOutputTokens, signal: deps.signal, ...(deps.reasoning && deps.reasoning !== "off" ? { reasoning: deps.reasoning } : {}) });
         const parsed = parseMemoryOutput(text, request.wantsCoarse);
         if (!parsed.detail) throw new Error("empty memory");
         ({ coarse, detail } = parsed);
         break;
       } catch (error) {
-        failures.push(`${model.provider}/${model.id}: ${error instanceof Error ? error.message : String(error)}`);
+        const reason = error instanceof Error ? error.message : String(error);
+        failures.push(`${model.provider}/${model.id}: ${reason.length > 240 ? `${reason.slice(0, 240)}…` : reason}`);
       }
     }
     if (detail === undefined) {
@@ -394,7 +428,7 @@ export function piMemoryLlm(auth: (model: Model<any>) => Promise<{ apiKey?: stri
           ? { role: "user" as const, content: m.content, timestamp: Date.now() }
           : { role: "assistant" as const, content: [{ type: "text" as const, text: m.content }], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop" as const, timestamp: Date.now() }),
       },
-      { maxTokens: Math.min(options.maxTokens, model.maxTokens > 0 ? model.maxTokens : options.maxTokens), ...(options.signal ? { signal: options.signal } : {}), ...credentials },
+      { maxTokens: Math.min(options.maxTokens, model.maxTokens > 0 ? model.maxTokens : options.maxTokens), ...(options.signal ? { signal: options.signal } : {}), ...(model.reasoning && options.reasoning ? { reasoning: options.reasoning as never } : {}), ...credentials },
     );
     if (message.stopReason === "error" || message.stopReason === "aborted") throw new Error(message.errorMessage ?? "memory model call failed");
     return message.content.filter((part): part is { type: "text"; text: string } => part.type === "text").map((part) => part.text).join("");

@@ -146,6 +146,41 @@ test("model order: self fails → fallback; all fail → mechanical fold that ke
   assert.match(failed.summary, /I remember it via fallback/, "prior memory carried, not lost");
 });
 
+test("never throws: non-model failure (hostile message) → last-resort fold, prefix + index byte-identical", async () => {
+  const good = recordingLlm(voicedReply);
+  const one = await autobiographicalCompaction(
+    { firstKeptEntryId: "c1", tokensBefore: 1, messagesToSummarize: conversation(30), turnPrefixMessages: [], fileOps: fileOps() },
+    { agentName: "lampas", models: [model("anthropic", "claude-opus-5")], llm: good.llm },
+  );
+  const hostile = new Proxy({}, { get() { throw new Error("poisoned entry"); } });
+  const two = await autobiographicalCompaction(
+    { firstKeptEntryId: "c2", tokensBefore: 1, previousSummary: one.summary, messagesToSummarize: [...conversation(4, 30), hostile], turnPrefixMessages: [], fileOps: fileOps() },
+    { agentName: "lampas", models: [model("anthropic", "claude-opus-5")], llm: good.llm },
+  );
+  const p1 = parseMemorySummary(one.summary);
+  const p2 = parseMemorySummary(two.summary);
+  assert.equal(sha(p2.prefix!), sha(p1.prefix!));
+  assert.deepEqual(p2.index, p1.index);
+  assert.match(two.summary, /Mechanical fold — no recollection formed: poisoned entry/);
+  assert.match(two.summary, /I inspected compaction.ts and recorded each prefix hash myself/, "prior memory carried");
+  assert.equal(two.firstKeptEntryId, "c2");
+});
+
+test("summaryThinking: parse + reasoning reaches the memory call only when not off", async () => {
+  assert.equal(COMPACT_MEMORY_DEFAULTS.summaryThinking, "session");
+  assert.equal(parseCompactMemoryConfig({ summaryThinking: "high" }).summaryThinking, "high");
+  assert.equal(parseCompactMemoryConfig({ summaryThinking: "ultra" }).summaryThinking, "session");
+  const seen: Array<string | undefined> = [];
+  const llm: MemoryLlm = async (_m, req, options) => { seen.push(options.reasoning); return voicedReply(req); };
+  for (const reasoning of ["high", "off", undefined]) {
+    await autobiographicalCompaction(
+      { firstKeptEntryId: "c", tokensBefore: 1, messagesToSummarize: conversation(30), turnPrefixMessages: [], fileOps: fileOps() },
+      { agentName: "lampas", models: [model("anthropic", "claude-opus-5")], llm, reasoning },
+    );
+  }
+  assert.deepEqual(seen, ["high", undefined, undefined]);
+});
+
 test("thin fold: no LLM call (thin-chunk guard); legacy pi summary is carried as detail, never re-pinned", async () => {
   const { calls, llm } = recordingLlm(voicedReply);
   const thin = await autobiographicalCompaction(
