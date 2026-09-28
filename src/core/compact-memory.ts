@@ -3,8 +3,8 @@
 // AutobiographicalStrategy (@animalabs/context-manager 0.11.0, MIT) — see
 // docs/connectome-memory.md. `.gaia/config.json` key: `compact`.
 
-export type CompactSummaryVoice = "agent" | "neutral";
-export type CompactSummaryModel = "self" | "fallback";
+type CompactSummaryVoice = "agent" | "neutral";
+type CompactSummaryModel = "self" | "fallback";
 
 export interface CompactMemoryConfig {
   /** agent = first-person memory written by the agent (its own system prompt

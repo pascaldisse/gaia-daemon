@@ -325,7 +325,8 @@ export class PiCompaction {
         if (!operation) {
           const config = this.memoryConfig();
           // neutral = the pre-connectome path, byte-for-byte.
-          if (config.summaryVoice !== "agent") return runCompactionFallback(event, ctx, provider, name);
+          // No live model = no voice to write in; defer to the legacy path.
+          if (config.summaryVoice !== "agent" || !ctx.model) return runCompactionFallback(event, ctx, provider, name);
           return { compaction: await this.voiced(event, ctx, config) };
         }
         if (operation.kind === "apply")

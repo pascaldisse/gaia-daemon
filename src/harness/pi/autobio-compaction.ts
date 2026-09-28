@@ -56,8 +56,8 @@ export interface ParsedMemory {
   detail?: string;
 }
 
-export type WindowResolution = "line" | "coarse" | "detail";
-export interface FoldWindow {
+type WindowResolution = "line" | "coarse" | "detail";
+interface FoldWindow {
   resolution: WindowResolution;
   /** Per-message serialized text (pi serializeConversation format). */
   texts: string[];
@@ -105,7 +105,7 @@ function stripFileTags(text: string): string {
 
 // ---------------------------------------------------------------- planning
 
-export function serializeMessage(message: unknown): string {
+function serializeMessage(message: unknown): string {
   return serializeConversation(convertToLlm([message] as Parameters<typeof convertToLlm>[0]));
 }
 
@@ -168,7 +168,7 @@ export function planFold(messages: unknown[], previous: ParsedMemory, config: Co
 const STOP = new Set("about above after again against because before being below between could doing during further having other should their there these those through under until which while would where there's that's what's assistant user thinking calls".split(" "));
 
 /** Salient terms for a recall query: most frequent ≥5-char words, ties by first use. */
-export function recallTerms(text: string, limit = 4): string[] {
+function recallTerms(text: string, limit = 4): string[] {
   const counts = new Map<string, { n: number; first: number }>();
   let position = 0;
   for (const word of text.toLowerCase().match(/[a-zà-ÿ0-9_./-]{5,}/g) ?? []) {
@@ -187,7 +187,7 @@ function isoMinute(ts: number | undefined): string {
 }
 
 /** Mechanical one-liner (no LLM): span · size · first ask · recall pointer. */
-export function indexLine(window: Pick<FoldWindow, "texts" | "firstTs" | "lastTs">, maxChars: number): string {
+function indexLine(window: Pick<FoldWindow, "texts" | "firstTs" | "lastTs">, maxChars: number): string {
   const joined = window.texts.join("\n");
   const firstUser = window.texts.find((text) => text.startsWith("[User]:"))?.slice(7).trim() ?? window.texts[0] ?? "";
   const ask = firstUser.replace(/\s+/g, " ").slice(0, 90);
@@ -197,7 +197,7 @@ export function indexLine(window: Pick<FoldWindow, "texts" | "firstTs" | "lastTs
 }
 
 /** Demote a previous coarse memory to ONE index line (first sentence, bounded). */
-export function demoteToLine(memory: string, maxChars: number): string {
+function demoteToLine(memory: string, maxChars: number): string {
   const flat = memory.replace(/\s+/g, " ").trim();
   const sentence = /^(.+?[.!?])(\s|$)/.exec(flat)?.[1] ?? flat;
   const terms = recallTerms(memory);
@@ -218,7 +218,7 @@ function substantiveChars(texts: string[]): number {
 }
 
 /** connectome formatInstruction, generalized to the two-resolution output. */
-export function memoryInstruction(agentName: string, detailTokens: number, coarseTokens: number | undefined): string {
+function memoryInstruction(agentName: string, detailTokens: number, coarseTokens: number | undefined): string {
   const self = `You are ${agentName}; this memory is yours.`;
   const shared =
     "Speak in the first person from your own perspective (\"I …\"), never as an observer describing \"the assistant\". " +
@@ -235,7 +235,7 @@ export function memoryInstruction(agentName: string, detailTokens: number, coars
   );
 }
 
-export function buildVoicedRequest(input: {
+function buildVoicedRequest(input: {
   agentName: string;
   agentSystemPrompt?: string;
   plan: FoldPlan;
@@ -272,7 +272,7 @@ export function buildVoicedRequest(input: {
 }
 
 /** connectome stripThinkingPreamble + tag extraction; untagged → all detail. */
-export function parseMemoryOutput(text: string, wantsCoarse: boolean): { coarse?: string; detail: string } {
+function parseMemoryOutput(text: string, wantsCoarse: boolean): { coarse?: string; detail: string } {
   const unwrapped = text.replace(/^\s*<thinking>([\s\S]*)<\/thinking>\s*$/, "$1").replace(/<thinking>[\s\S]*?<\/thinking>/g, "").trim();
   const tag = (name: string) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(unwrapped)?.[1]?.trim();
   const detail = tag("detail");
@@ -283,11 +283,11 @@ export function parseMemoryOutput(text: string, wantsCoarse: boolean): { coarse?
 
 // ---------------------------------------------------------------- assembly
 
-export function renderPrefix(texts: string[]): string {
+function renderPrefix(texts: string[]): string {
   return `${PREFIX_OPEN}\n${texts.join("\n\n")}\n${PREFIX_CLOSE}`;
 }
 
-export function assembleMemorySummary(parts: {
+function assembleMemorySummary(parts: {
   prefix?: string;
   index: string[];
   coarse?: string;
