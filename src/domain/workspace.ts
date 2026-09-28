@@ -4,6 +4,7 @@
 
 import { existsSync } from "node:fs";
 import { parseAutoCompactConfig } from "../core/auto-compact.js";
+import { parseCompactMemoryConfig } from "../core/compact-memory.js";
 import { mkdir, readFile, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -137,6 +138,7 @@ async function mergeGlobalDefaults(cwd: string, config: WorkspaceConfig, workspa
   if (resolve(cwd) === resolve(homedir())) return;
   const globalConfig = parseWorkspaceConfig(await readJson(globalPaths.config()), () => true);
   config.autoCompact = parseAutoCompactConfig(workspaceRaw && typeof workspaceRaw === "object" && "autoCompact" in workspaceRaw ? workspaceRaw.autoCompact : undefined, globalConfig.autoCompact);
+  config.compact = parseCompactMemoryConfig(workspaceRaw && typeof workspaceRaw === "object" && "compact" in workspaceRaw ? workspaceRaw.compact : undefined, globalConfig.compact);
   if (globalConfig.env) config.env = { ...globalConfig.env, ...config.env };
   config.modelReasoningOverrides = mergeModelReasoningOverrides(globalConfig.modelReasoningOverrides, config.modelReasoningOverrides);
   // Pi's user-global extension policy is daemon-wide: ~/.gaia/config.json

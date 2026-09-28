@@ -1,3 +1,4 @@
+import { COMPACT_MEMORY_DEFAULTS } from "../../core/compact-memory.js";
 import { join } from "node:path";
 import { PI_SETTINGS_DEFAULTS } from "../../core/types/settings.js";
 import { PiCleanCompaction } from "./clean-compact.js";
@@ -103,6 +104,8 @@ export class PiRuntime implements AgentRuntime {
               options.cleanCompactionIndexPath,
             )
         : undefined,
+      () => this.workspace.config.compact ?? COMPACT_MEMORY_DEFAULTS,
+      this.agent.displayName || this.agent.id,
     );
     this.cleanCompaction = new PiCleanCompaction(
       this.sessions,

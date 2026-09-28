@@ -9,6 +9,7 @@ import { parseModelReasoningOverrides } from "./model-reasoning-config.js";
 import { workspacePaths } from "./paths.js";
 import { canonicalHarnessId } from "./harness-id.js";
 import { parseAutoCompactConfig } from "./auto-compact.js";
+import { parseCompactMemoryConfig } from "./compact-memory.js";
 export { AUTO_COMPACT_DEFAULTS, parseAutoCompactConfig } from "./auto-compact.js";
 
 export const DEFAULTS = {
@@ -430,6 +431,7 @@ export function parseWorkspaceConfig(raw: unknown, validHarness: (id: string) =>
     memory: resolveMemoryConfig(MEMORY_DEFAULTS, parseMemoryPatch(obj.memory)),
     agentEndConversation: typeof obj.agentEndConversation === "boolean" ? obj.agentEndConversation : DEFAULTS.agentEndConversation,
 autoCompact: parseAutoCompactConfig(obj.autoCompact),
+    compact: parseCompactMemoryConfig(obj.compact),
   };
   if (typeof obj.harness === "string") {
     const harness = canonicalHarnessId(obj.harness);

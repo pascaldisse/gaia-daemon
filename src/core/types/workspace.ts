@@ -1,5 +1,6 @@
 import type { AgentDef, HooksConfig, McpServerConfig, MemoryConfig, ModelReasoningOverride, SandboxConfig, CollabConfig } from "./agents.js";
 import type { PiSettings } from "./settings.js";
+import type { CompactMemoryConfig } from "../compact-memory.js";
 
 // ---------------------------------------------------------------------------
 // Workspace (.gaia/config.json + resolved layout)
@@ -43,6 +44,8 @@ export interface WorkspaceConfig {
   agentEndConversation: boolean;
   /** Workspace default; a room state autoCompact section may override it. */
   autoCompact: AutoCompactConfig;
+  /** How a fold is WRITTEN (voice/prefix/resolution); absent = COMPACT_MEMORY_DEFAULTS. */
+  compact?: CompactMemoryConfig;
   memory: MemoryConfig;
   harness?: string;
   maxSummonsPerRoom?: number;

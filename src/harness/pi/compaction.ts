@@ -10,6 +10,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { NO_SESSION_TO_COMPACT, type CompactResult } from "../../core/types.js";
 import { findModelWithAlias } from "../model-aliases.js";
+import { COMPACT_MEMORY_DEFAULTS, type CompactMemoryConfig } from "../../core/compact-memory.js";
+import { autobiographicalCompaction, piMemoryLlm, type MemoryLlm } from "./autobio-compaction.js";
 import type { PiSessionLike } from "./session.js";
 const FORCE_COMPACT_KEEP_RECENT_TOKENS = 2000;
 /** `/dsc-compact` must leave no raw recent tail above its explicit clean
@@ -207,6 +209,12 @@ export class PiCompaction {
     ) => Promise<PiSessionLike | undefined>,
     private readonly agentId: string,
     private readonly cleanSummary: CleanSummaryLoader = loadCleanCompactionOverride,
+    /** Read per fold so a config edit applies without a restart. */
+    private readonly memoryConfig: () => CompactMemoryConfig = () => COMPACT_MEMORY_DEFAULTS,
+    /** Name the memory is written as (connectome summaryParticipant). */
+    private readonly agentName: string = agentId,
+    /** Test seam; default = pi-ai completeSimple with registry credentials. */
+    private readonly memoryLlm?: MemoryLlm,
   ) {}
   async compact(roomId: string): Promise<CompactResult> {
     const session = await this.session(roomId);
@@ -314,7 +322,12 @@ export class PiCompaction {
         const operation = this.operations.get(roomId);
         // Ordinary /compact is intentionally unaware of the clean-summary
         // registry. Only /dsc-compact installs the explicit clean operation.
-        if (!operation) return runCompactionFallback(event, ctx, provider, name);
+        if (!operation) {
+          const config = this.memoryConfig();
+          // neutral = the pre-connectome path, byte-for-byte.
+          if (config.summaryVoice !== "agent") return runCompactionFallback(event, ctx, provider, name);
+          return { compaction: await this.voiced(event, ctx, config) };
+        }
         if (operation.kind === "apply")
           return {
             compaction: {
@@ -347,6 +360,11 @@ export class PiCompaction {
         }
         try {
           if (!ctx.model) throw new Error("no model set for compaction");
+          const config = this.memoryConfig();
+          if (config.summaryVoice === "agent") {
+            this.drafts.set(roomId, await this.voiced(event, ctx, config));
+            return { cancel: true };
+          }
           const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
           if (!auth.ok) throw new Error(auth.error);
           this.drafts.set(
@@ -375,6 +393,31 @@ export class PiCompaction {
         return { cancel: true };
       });
     };
+  }
+  /** Agent-voiced fold (connectome autobiographical): agent's own system
+   * prompt + own model + own name; sonnet only as an anthropic-session fallback. */
+  private async voiced(
+    event: { preparation: MechanicalCompactionInput; signal: AbortSignal },
+    ctx: { model?: Model<any>; modelRegistry: Registry; getSystemPrompt?: () => string },
+    config: CompactMemoryConfig,
+  ): Promise<CompactionResult> {
+    const registry = ctx.modelRegistry;
+    const fallback = ctx.model?.provider === COMPACT_FALLBACK_MODEL.provider
+      ? findModelWithAlias(registry, COMPACT_FALLBACK_MODEL.provider, COMPACT_FALLBACK_MODEL.name)
+      : undefined;
+    const ordered = config.summaryModel === "self" ? [ctx.model, fallback] : [fallback, ctx.model];
+    const models = ordered.filter((model, index, all): model is Model<any> =>
+      Boolean(model) && all.findIndex((other) => other?.provider === model!.provider && other?.id === model!.id) === index);
+    let agentSystemPrompt: string | undefined;
+    try { agentSystemPrompt = ctx.getSystemPrompt?.(); } catch { agentSystemPrompt = undefined; }
+    const llm = this.memoryLlm ?? piMemoryLlm(async (model) => {
+      const auth = await registry.getApiKeyAndHeaders(model);
+      if (!auth.ok) throw new Error(auth.error);
+      return { ...(auth.apiKey ? { apiKey: auth.apiKey } : {}), ...(auth.headers ? { headers: auth.headers } : {}), ...(auth.env ? { env: auth.env } : {}) };
+    });
+    return autobiographicalCompaction(event.preparation, {
+      agentName: this.agentName, agentSystemPrompt, models, llm, config, signal: event.signal,
+    });
   }
   private async session(roomId: string): Promise<PiSessionLike | undefined> {
     return this.sessions.get(roomId)?.session?.compact
