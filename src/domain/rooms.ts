@@ -638,7 +638,7 @@ export async function readTranscriptRecordsFrom(path: string, cursor = 0): Promi
 }
 
 /** Default tail-scan block for findTranscriptRecordById. */
-export const TRANSCRIPT_ID_SCAN_BLOCK_BYTES = 1 << 20;
+const TRANSCRIPT_ID_SCAN_BLOCK_BYTES = 1 << 20;
 
 /** One transcript record by its stored `id`, scanned from the END of the file
  * in `blockBytes` blocks: only lines containing the writer's own serialization
