@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RoomHandle, readTranscriptRecordsFrom, deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle } from "../src/domain/rooms.js";
+import { RoomHandle, findTranscriptRecordById, readTranscriptRecordsFrom, deriveRoomTitle, isAutoRoomId, newRoomEventId, normalizeRoomState, normalizeRoomTitle } from "../src/domain/rooms.js";
 import { initWorkspace, loadWorkspace } from "../src/domain/workspace.js";
 import { activateSetup } from "../src/services/setups.js";
 import type { PendingTurn, RoomEvent } from "../src/core/types.js";
@@ -970,4 +970,35 @@ test("seedTranscript refuses an occupied room and never clobbers its history", a
   assert.equal(await empty.seedTranscript(before), true, "a free id is seeded");
   assert.equal((await empty.eventsFrom(0)).events[0]!.text, "original history");
   await rm(root, { recursive: true, force: true });
+});
+
+
+// Read-aloud looks one event up per chunk request; a 239 MB room paid a full
+// readFile+JSON.parse (7–12 s) each time (09-29, player stuck 0:00/live).
+test("eventById tail-scans by id and matches the full-parse result", async () => {
+  const room = await openRoom();
+  const events: RoomEvent[] = [
+    { id: "evt_a", timestamp: "t", author: "gaia", text: "酔態 — multibyte ".repeat(20) },
+    { id: "evt_b", timestamp: "t", author: "user", targets: ["gaia"], text: "quote {\"id\":\"evt_a\"}" },
+    { id: "evt_c", timestamp: "t", author: "gaia", text: "later", details: { tools: [{ id: "tool_1", toolName: "x", args: { id: "evt_a" }, result: "r" }] } as never },
+  ];
+  for (const event of events) await room.appendEvent(event);
+  const { events: full } = await room.eventsFrom(0);
+  for (const block of [7, 64, 1 << 20]) {
+    for (const expected of full) assert.deepEqual(await room.eventById(expected.id, block), expected, `block=${block} id=${expected.id}`);
+    // A nested {"id":"evt_a"} inside a LATER line must never be returned as evt_a.
+    assert.equal((await findTranscriptRecordById(room.transcriptPath, "evt_a", block))?.id, "evt_a");
+    assert.equal(await room.eventById("evt_missing", block), undefined);
+  }
+});
+
+test("eventById falls back to the full parse for lines the tail scan cannot see", async () => {
+  const room = await openRoom();
+  // Pre-id legacy line + a hand-spaced serialization the byte needle misses.
+  await writeFile(room.transcriptPath, [
+    JSON.stringify({ timestamp: "t", author: "gaia", text: "legacy" }),
+    '{"id": "evt_spaced", "timestamp": "t", "author": "gaia", "text": "spaced"}',
+  ].join("\n") + "\n");
+  assert.equal((await room.eventById("legacy_0"))?.text, "legacy");
+  assert.equal((await room.eventById("evt_spaced"))?.text, "spaced");
 });

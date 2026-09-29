@@ -122,8 +122,7 @@ export class RoomMaintenanceMixin {
    * plugin-imposed cap). */
   async eventById(eventId: string, opts: { display?: boolean } = {}): Promise<RoomEvent | undefined> {
     await this.init();
-    const { events } = await this.room.eventsFrom(0);
-    const event = events.find((event) => event.id === eventId);
+    const event = await this.room.eventById(eventId);
     if (!event) return undefined;
     return opts.display ? this.displayEvents([event])[0] : event;
   }

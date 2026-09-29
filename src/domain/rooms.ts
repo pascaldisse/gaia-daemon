@@ -17,7 +17,7 @@ import { parseAutoCompactOverrides } from "../core/auto-compact.js";
 //      re-run the turn from partialReply. Idempotent either way.
 
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { BackgroundTask, ContextGatePending, EventDetails, MessageAttachment, MessageBlock, MonadConfig, PendingTurn, QueuedMessage, RoomAutoCompactState, RoomEvent, RoomEventKind, RoomGoal, RoomState, SummonDelivery, ToolDetail } from "../core/types.js";
@@ -637,6 +637,59 @@ export async function readTranscriptRecordsFrom(path: string, cursor = 0): Promi
   );
 }
 
+/** Default tail-scan block for findTranscriptRecordById. */
+export const TRANSCRIPT_ID_SCAN_BLOCK_BYTES = 1 << 20;
+
+/** One transcript record by its stored `id`, scanned from the END of the file
+ * in `blockBytes` blocks: only lines containing the writer's own serialization
+ * (`"id":"<id>"`) are parsed, and each hit is verified on the parsed record
+ * (a quoted id inside tool output never matches). Read-aloud lookups hit
+ * recent events, so this touches a few blocks instead of readFile+JSON.parse
+ * of the whole transcript (239 MB room measured 7–12 s per lookup, 09-29).
+ * undefined = not found BY THIS SCAN; callers keep the full-parse fallback for
+ * lines serialized any other way. */
+export async function findTranscriptRecordById(path: string, id: string, blockBytes = TRANSCRIPT_ID_SCAN_BLOCK_BYTES): Promise<Record<string, unknown> | undefined> {
+  if (!id || !existsSync(path)) return undefined;
+  const block = Number.isInteger(blockBytes) && blockBytes > 0 ? blockBytes : TRANSCRIPT_ID_SCAN_BLOCK_BYTES;
+  const needle = Buffer.from(`"id":${JSON.stringify(id)}`, "utf8");
+  const fh = await open(path, "r");
+  try {
+    let end = (await fh.stat()).size;
+    // Bytes of the (incomplete) line that started before the block just read.
+    let carry: Buffer = Buffer.alloc(0);
+    while (end > 0) {
+      const start = Math.max(0, end - block);
+      const buf = Buffer.alloc(end - start);
+      await fh.read(buf, 0, buf.length, start);
+      const chunk = carry.length ? Buffer.concat([buf, carry]) : buf;
+      // Only lines known to be complete: at file start, everything; otherwise
+      // what follows the first newline (the prefix may continue further back).
+      const firstNl = start === 0 ? -1 : chunk.indexOf(10);
+      if (start > 0 && firstNl < 0) { carry = chunk; end = start; continue; }
+      const region = chunk.subarray(firstNl + 1);
+      let pos = region.lastIndexOf(needle);
+      while (pos >= 0) {
+        const lineStart = pos === 0 ? 0 : region.lastIndexOf(10, pos - 1) + 1;
+        const nl = region.indexOf(10, pos);
+        const line = region.subarray(lineStart, nl < 0 ? region.length : nl).toString("utf8");
+        try {
+          const raw: unknown = JSON.parse(line);
+          if (isRecord(raw) && raw.id === id) return raw;
+        } catch {
+          // Malformed line: the full reader skips it too.
+        }
+        if (lineStart === 0) break;
+        pos = region.lastIndexOf(needle, lineStart - 1);
+      }
+      carry = start === 0 ? Buffer.alloc(0) : Buffer.from(chunk.subarray(0, firstNl));
+      end = start;
+    }
+    return undefined;
+  } finally {
+    await fh.close();
+  }
+}
+
 export class RoomHandle {
   private stateCache: RoomState | undefined;
   private stateCacheVersion = -1;
@@ -1099,6 +1152,22 @@ export class RoomHandle {
         })
       : page.items;
     return { events, nextCursor: page.nextCursor };
+  }
+
+  /** One event by id without parsing the whole transcript (see
+   * findTranscriptRecordById). Falls back to the full eventsFrom(0) scan for
+   * legacy line-index ids and anything the tail scan cannot see. */
+  async eventById(eventId: string, blockBytes = TRANSCRIPT_ID_SCAN_BLOCK_BYTES): Promise<RoomEvent | undefined> {
+    const raw = eventId.startsWith("legacy_") ? undefined : await findTranscriptRecordById(this.transcriptPath, eventId, blockBytes);
+    const event = raw ? roomEventFrom(raw, -1) : undefined;
+    if (!event) {
+      const { events } = await this.eventsFrom(0);
+      return events.find((candidate) => candidate.id === eventId);
+    }
+    // Same legacy v1 side-table merge as eventsFrom.
+    if (event.author === "user" || ("details" in event && event.details)) return event;
+    const details = (await this.state()).runtimeDetails?.[event.id];
+    return details ? { ...event, details } : event;
   }
 
   async recentEvents(limit: number): Promise<RoomEvent[]> {
