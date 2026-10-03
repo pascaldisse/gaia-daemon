@@ -7,7 +7,8 @@
 // retried after a write finishes or backs off.
 
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -38,6 +39,20 @@ const TUNNEL_MAX_FAILS = positiveIntEnv("GAIA_TUNNEL_MAX_FAILS", "3");
 const TUNNEL_EXIT_DELAY_MS = positiveIntEnv("GAIA_TUNNEL_EXIT_DELAY_MS", "5000");
 
 mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+
+// launchd gives no shell env; wrangler OAuth expires -> KV pushes silently stale (2026-10-03 blank phone).
+// Pull CLOUDFLARE_API_TOKEN (+ account id) from ~/.gaia/secrets.env for KV puts.
+function kvEnv() {
+  const env = { ...process.env };
+  const file = path.join(os.homedir(), ".gaia", "secrets.env");
+  if (!env.CLOUDFLARE_API_TOKEN && existsSync(file)) {
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      const m = line.match(/^\s*(?:export\s+)?(CLOUDFLARE_API_TOKEN|CLOUDFLARE_ACCOUNT_ID)\s*=\s*(.*?)\s*$/);
+      if (m) env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+    }
+  }
+  return env;
+}
 
 let pushed = null;
 let lastSeenHostname = null;
@@ -73,7 +88,7 @@ function runKvPut(hostname) {
     const child = spawn(
       BUNX_BIN,
       ["wrangler", "kv", "key", "put", "--namespace-id", NAMESPACE_ID, "--remote", "origin", hostname],
-      { cwd: REPO_ROOT, env: process.env, detached: true, stdio: ["ignore", "pipe", "pipe"] },
+      { cwd: REPO_ROOT, env: kvEnv(), detached: true, stdio: ["ignore", "pipe", "pipe"] },
     );
     activeKvChild = child;
 
