@@ -52,7 +52,7 @@ test("float32ToWav writes signed 16-bit 24kHz PCM WAV", () => {
   assert.equal(wav.readInt16LE(48), 32767);
 });
 
-test("bridge emits Ready, Step, sequential Word/EndWord, then Marker after Replicate flush", async () => {
+test("bridge emits Ready, Step, sequential Word/EndWord, then Marker after STT flush", async () => {
   const requests: Array<{ bytes: number; engineId?: string; aborted: boolean }> = [];
   const deps: SttBridgeDeps = {
     log: () => {},
@@ -82,7 +82,7 @@ test("bridge emits Ready, Step, sequential Word/EndWord, then Marker after Repli
 
     await marked;
     assert.equal(requests.length, 1, "one VAD utterance was sent to shared transcribe path");
-    assert.equal(requests[0]?.engineId, "replicate", "call bridge forces Replicate, not dictation setting");
+    assert.equal(requests[0]?.engineId, undefined, "call bridge follows voice.json sttEngine");
     assert.equal(requests[0]?.bytes, 44 + 9 * 1_920 * 2, "WAV contains speech plus silence window");
     assert.equal(messages[0]?.type, "Ready");
     const steps = messages.filter((message) => message.type === "Step");

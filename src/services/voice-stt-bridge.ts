@@ -61,7 +61,7 @@ export class EnergyVad {
 }
 
 export interface SttBridgeDeps {
-  /** Defaults to the shared registry path, forced to its Replicate engine. */
+  /** Defaults to the shared registry path, using voice.json sttEngine. */
   transcribe?: (request: TranscribeRequest) => ReturnType<typeof transcribe>;
   log(message: string): void;
 }
@@ -78,7 +78,7 @@ export class SttCallBridge {
     const server = createServer((request, response) => {
       const path = (request.url ?? "").split("?")[0];
       if (path === "/api/build_info" || path === "/") {
-        json(response, 200, { service: "gaia-stt-bridge", backend: "replicate", status: "ok", sample_rate: STT_SAMPLE_RATE }, "application/json");
+        json(response, 200, { service: "gaia-stt-bridge", backend: "gaia-stt", status: "ok", sample_rate: STT_SAMPLE_RATE }, "application/json");
         return;
       }
       response.writeHead(404);
@@ -270,7 +270,6 @@ class SttSession {
       const result = await run({
         audio: { data: float32ToWav(samples), contentType: "audio/wav", filename: "voice-call.wav" },
         settings: this.settings,
-        engineId: "replicate",
         log: this.deps.log,
         signal: this.aborter.signal,
       });
