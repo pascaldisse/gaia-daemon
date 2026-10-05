@@ -9,6 +9,7 @@ import {
   type SttContext,
 } from "../src/services/transcribe.js";
 import { appleLocale, appleTranscribe } from "../src/services/stt-apple.js";
+import { whistleLanguage, whistleTranscribe } from "../src/services/stt-whistle.js";
 import { VOICE_SETTINGS_DEFAULTS, type VoiceSettings } from "../src/services/voice.js";
 
 function voiceSettings(overrides: Partial<VoiceSettings> = {}): VoiceSettings {
@@ -37,7 +38,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 // ---------------------------------------------------------------------------
 // registry (same law as the TTS engine registry / harnesses)
 
-test("engines: replicate, elevenlabs, openai, and apple are registered", () => {
+test("engines: replicate, elevenlabs, openai, apple, and whistle are registered", () => {
+  assert.ok(sttEngineIds().includes("whistle"));
   assert.ok(sttEngineIds().includes("replicate"));
   assert.ok(sttEngineIds().includes("elevenlabs"));
   assert.ok(sttEngineIds().includes("openai"));
@@ -336,3 +338,39 @@ test("openai: a localhost base URL needs no key; a remote one does", async () =>
     if (prev !== undefined) process.env.OPENAI_API_KEY = prev;
   }
 });
+
+// ---------------------------------------------------------------------------
+// whistle (local Cactus Whistle) — REAL engine over a REAL clip; assets are
+// fetched once into the gaia cache. Skipped off macOS (the `say` fixture).
+
+test("whistleLanguage: supported ISO codes pass, everything else auto-detects", () => {
+  assert.equal(whistleLanguage("de"), "de");
+  assert.equal(whistleLanguage("en-US"), "en");
+  assert.equal(whistleLanguage("ja"), "");
+  assert.equal(whistleLanguage("auto"), "");
+  assert.equal(whistleLanguage(undefined), "");
+});
+
+test.skipIf(process.platform !== "darwin")("whistle: transcribes a real spoken clip (webm/opus in, text out)", async () => {
+  const { mkdtempSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawnSync } = await import("node:child_process");
+  const dir = mkdtempSync(join(tmpdir(), "whistle-test-"));
+  const run = (cmd: string, args: string[]) => assert.equal(spawnSync(cmd, args).status, 0, `${cmd} failed`);
+  run("say", ["-o", join(dir, "c.aiff"), "Turn off the kitchen lights and remind me to call Siobhan tomorrow."]);
+  run("ffmpeg", ["-loglevel", "error", "-i", join(dir, "c.aiff"), "-c:a", "libopus", join(dir, "c.webm")]);
+  const result = await transcribe({
+    audio: { data: readFileSync(join(dir, "c.webm")), contentType: "audio/webm" },
+    settings: voiceSettings({ sttEngine: "whistle" }),
+  });
+  assert.equal(result.engine, "whistle");
+  assert.match(result.text.toLowerCase(), /turn off the kitchen lights/);
+  // >30 s clip: segmented, not rejected ("audio limit is 30 s").
+  run("ffmpeg", ["-loglevel", "error", "-stream_loop", "9", "-i", join(dir, "c.aiff"), "-t", "40", join(dir, "long.wav")]);
+  const long = await whistleTranscribe({
+    audio: { data: readFileSync(join(dir, "long.wav")), contentType: "audio/wav" },
+    settings: voiceSettings(), language: "en", log: () => {},
+  });
+  assert.ok((long.text.toLowerCase().match(/kitchen lights/g) ?? []).length >= 3, long.text);
+}, 180_000);

@@ -604,7 +604,7 @@ function voiceJsonHints(): FileHints {
     sttEngine: select(values(sttEngineIds()), {
       optional: true,
       label: "Voice input (dictation) engine",
-      description: "Which speech-to-text engine the composer mic uses — replicate (hosted Whisper; default), elevenlabs (Scribe API), or openai (any OpenAI-compatible /audio/transcriptions endpoint, including a local whisper-server). Swappable like the TTS engine.",
+      description: "Which speech-to-text engine the composer mic uses — replicate (hosted Whisper; default), elevenlabs (Scribe API), openai (any OpenAI-compatible /audio/transcriptions endpoint, including a local whisper-server), apple (local SFSpeech, macOS), or whistle (Cactus Whistle, local 16.9 MB, en/de/fr/es/it/nl/pl, no keys; model auto-downloads on first use). Swappable like the TTS engine.",
     }),
     callSttEngine: select(values(["kyutai", "replicate"]), {
       optional: true,

@@ -14,9 +14,10 @@ import { mkdirSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { globalPaths } from "../core/paths.js";
 import type { SttContext, SttResult } from "./transcribe.js";
+import { runProcess as run } from "./stt-process.js";
 
 // ---------------------------------------------------------------------------
 // Swift helper. Embedded string -> cached compile keyed by source hash (same
@@ -140,24 +141,6 @@ function helperPath(log: (message: string) => void): string {
     chmodSync(path, 0o755);
   }
   return path;
-}
-
-interface RunResult { code: number; stdout: string; stderr: string }
-
-function run(command: string[], signal: AbortSignal): Promise<RunResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command[0], command.slice(1), { stdio: ["ignore", "pipe", "pipe"], signal });
-    const out: Buffer[] = [];
-    const err: Buffer[] = [];
-    child.stdout?.on("data", (c) => out.push(c));
-    child.stderr?.on("data", (c) => err.push(c));
-    child.on("error", reject);
-    child.on("close", (code) => resolve({
-      code: code ?? -1,
-      stdout: Buffer.concat(out).toString("utf8"),
-      stderr: Buffer.concat(err).toString("utf8"),
-    }));
-  });
 }
 
 // ISO-639-1 language hint (what SttContext.language carries, e.g. "en", "de")

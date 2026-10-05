@@ -11,11 +11,14 @@
 //      "either local or API" without touching the shared path
 //   5. apple engine — local Apple dictation (SFSpeechRecognizer), macOS only,
 //      zero keys, zero network for the on-device pass (impl in stt-apple.ts)
+//   6. whistle engine — Cactus Whistle (16.9 MB, 7 languages), local CPU, no keys;
+//      engine+weights auto-fetched once (impl in stt-whistle.ts)
 // Live-CALL STT is a different pipeline (services/voice.ts + the unmute stack):
 // streaming and duplex. This module is one-shot: audio bytes in, text out.
 
 import { elevenLabsKey, replicateKey, type VoiceSettings } from "./voice.js";
 import { appleTranscribe } from "./stt-apple.js";
+import { whistleTranscribe } from "./stt-whistle.js";
 
 // ---------------------------------------------------------------------------
 // Engine registry. An engine is DATA: an id plus a transcribe function over the
@@ -416,4 +419,13 @@ registerSttEngine({
   id: "apple",
   label: "Apple dictation (local, macOS only, SFSpeechRecognizer)",
   transcribe: appleTranscribe,
+});
+// ---------------------------------------------------------------------------
+// whistle — Cactus Whistle on-device STT (16.9 MB model via the native `needle`
+// engine, ~50 ms/clip warm, en/de/fr/es/it/nl/pl). Zero keys, zero network
+// after the first-run asset download. See stt-whistle.ts.
+registerSttEngine({
+  id: "whistle",
+  label: "Cactus Whistle (local, 16.9 MB, 7 languages)",
+  transcribe: whistleTranscribe,
 });
