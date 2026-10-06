@@ -3,16 +3,17 @@
 ## Chain
 
 ```
-Phone (installed GAIA iOS app)
-  -> Cloudflare quick tunnel (public trycloudflare.com hostname)
-  -> cloudflared tunnel --url http://127.0.0.1:8789   (manual process, NOT launchd)
-  -> edge-proxy: node scripts/edge-proxy.mjs, listens 127.0.0.1:8789
-       auth: bearer/cookie token, checked against ~/.gaia/edge-token
-  -> daemon: 127.0.0.1:8787   (src/cli.ts via tsx, NEVER managed by this stack's launchd)
+iOS Tauri shell (URL baked: src-tauri/mobile-daemon-url.txt)
+  -> https://151.115.73.182/phone/   (Scaleway WAW, Caddy, /phone prefix stripped)
+  -> reverse SSH  com.gaia.phone-bridge (launchd): -R 127.0.0.1:8790 -> Mac 127.0.0.1:8789
+  -> edge-proxy  com.gaia.edge-proxy (launchd), scripts/edge-proxy.mjs, 127.0.0.1:8789
+       auth: bearer/cookie token vs ~/.gaia/edge-token
+  -> daemon 127.0.0.1:8787
 ```
 
-The daemon (127.0.0.1:8787) and cloudflared are process-managed independently of
-this doc's launchd agents. Nothing here touches either.
+Cloudflare retired 2026-10-06, never again (Pascal). No quick tunnel, no Worker, no KV, no cloudflared.
+
+Daemon + phone-bridge = process-managed independently of this doc's edge-proxy agent.
 
 ## Keep-awake: daemon-managed, not launchd
 
@@ -43,41 +44,17 @@ One agent remains under `~/Library/LaunchAgents/`, `gui/$(id -u)` domain.
   `scripts/edge-proxy.mjs`, `WorkingDirectory` = repo root.
 - `RunAtLoad` + `KeepAlive`: restarts edge-proxy if it crashes or the machine reboots.
 - Logs (append): `/tmp/gaia-edge-proxy.log`.
-- Purpose: the only network-facing hop between cloudflared and the daemon; enforces
+- Purpose: the auth wall between phone-bridge and the daemon; enforces
   the token auth wall (`403` on `/api/app` without a valid token).
 - Bootout: `launchctl bootout gui/$(id -u)/com.gaia.edge-proxy`
 - Takeover of an ad-hoc `nohup` instance: kill the old pid first (verify its command
   line with `ps -p <pid> -o command=` before killing), then
   `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gaia.edge-proxy.plist`.
   Verify immediately with a local curl to `/api/app` (expect `403`) and the same path
-  through the public trycloudflare hostname (expect `403`). If either check fails:
+  through https://151.115.73.182/phone/api/app (expect `403`). If either check fails:
   `launchctl bootout gui/$(id -u)/com.gaia.edge-proxy` and fall back to
   `nohup node scripts/edge-proxy.mjs > /tmp/gaia-edge-proxy.log 2>&1 &` while
   investigating.
-
-## Why cloudflared stays manual
-
-cloudflared is intentionally **not** a launchd agent. A Cloudflare *quick tunnel*
-(`cloudflared tunnel --url ...` with no named tunnel/domain) gets a **new random
-`trycloudflare.com` hostname every time the process restarts**. The installed iOS
-app has that hostname baked into `src-tauri/mobile-daemon-url.txt` / the build.
-An unexpected launchd-triggered restart would silently rotate the hostname and
-brick the phone app with no obvious symptom besides "can't connect."
-
-Manual restart command (only run this deliberately):
-
-```
-cloudflared tunnel --url http://127.0.0.1:8789
-```
-
-Consequence of restarting: the public hostname changes. After restarting you must:
-1. Update `src-tauri/mobile-daemon-url.txt` with the new hostname.
-2. Rebuild and reinstall the iOS app so the new URL is baked into the binary.
-
-**Permanent fix**: once a real domain is available, switch to a *named* Cloudflare
-tunnel (`cloudflared tunnel create` + DNS route). Named tunnels have a stable
-hostname across restarts and reboots, and can then safely become a launchd agent
-like `com.gaia.edge-proxy`.
 
 ## Sleep / power story
 
