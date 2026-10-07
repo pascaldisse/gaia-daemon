@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import "../src/harness/index.js";
 import { Daemon } from "../src/daemon.js";
-import { readJson } from "../src/core/store.js";
+import { readJson, writeJsonAtomic } from "../src/core/store.js";
 import { globalPaths, workspacePaths } from "../src/core/paths.js";
 import type { UiEvent } from "../src/core/types.js";
 import { RoomHandle } from "../src/domain/rooms.js";
@@ -130,6 +130,44 @@ test("deleteAgent throws when trying to delete the default agent", async () => {
       () => daemon.deleteAgent(defaultAgentId),
       /Cannot delete @/,
       "deleting the default agent must throw"
+    );
+  } finally {
+    if (previousHome === undefined) delete process.env.GAIA_HOME;
+    else process.env.GAIA_HOME = previousHome;
+  }
+});
+
+test("applySettingsChange refreshes cached summon coordinators in place (new agent summonable w/o restart, live lanes survive)", async () => {
+  const previousHome = process.env.GAIA_HOME;
+  const home = await mkdtemp(join(tmpdir(), "gaia-home-"));
+  process.env.GAIA_HOME = home;
+  try {
+    const project = await mkdtemp(join(tmpdir(), "gaia-project-"));
+    await initWorkspace(project);
+    // cap=1 so a post-reload launch of a KNOWN agent stops at the cap check (no harness spawn)
+    const config = await readJson(workspacePaths.config(project)) as Record<string, unknown>;
+    await writeJsonAtomic(workspacePaths.config(project), { ...config, maxSummonsPerRoom: 1 });
+
+    const daemon = new Daemon({ cwd: project, log: () => {} });
+    const record = await daemon.registry.add(project);
+    const coordinator = await daemon.coordinatorFor(record.id); // caches boot-time workspace
+    assert.equal(daemon.summonCoordinators.get(record.id), coordinator);
+
+    // pre-existing active summon entry (same shape launch() records)
+    const running = (coordinator as unknown as { running: Map<string, unknown> }).running;
+    running.set("live-child", { roomId: "live-child", parentRoomId: "default", agentId: "gaia", prompt: "x", untrusted: false });
+
+    await assert.rejects(() => coordinator.launch("default", "fresh-agent", "t"), /Unknown agent/, "before reload: new agent unknown");
+
+    await scaffoldGlobalAgent(globalPaths.agentsDir(), "fresh-agent", { displayName: "Fresh" });
+    await daemon.applySettingsChange("global");
+
+    assert.equal(daemon.summonCoordinators.get(record.id), coordinator, "same coordinator instance (not cleared)");
+    assert.ok(running.has("live-child"), "active summon entry survives reload");
+    await assert.rejects(
+      () => coordinator.launch("default", "fresh-agent", "t"),
+      (error: Error) => !/Unknown agent/.test(error.message) && /Too many running summons/.test(error.message),
+      "after reload: agent known (stops at cap, not Unknown agent)",
     );
   } finally {
     if (previousHome === undefined) delete process.env.GAIA_HOME;

@@ -422,12 +422,18 @@ export class SummonCoordinator implements SummonHost {
   private readonly completions = new Map<string, Promise<unknown>>();
 
   constructor(
-    private readonly workspace: Workspace,
+    private workspace: Workspace,
     private readonly workspacePath: string,
     private readonly serviceForRoom: (roomId: string) => Promise<SummonRoomAccess>,
     private readonly maxPerRoom: () => Promise<number>,
     private readonly log: (message: string) => void = (message) => console.warn(`[gaia] ${message}`),
   ) {}
+
+  /** Settings hot-reload: swap in a freshly loaded workspace (new/removed agents,
+   * config) in place — `running`/`completions`/epochs are untouched so live lanes survive. */
+  updateWorkspace(workspace: Workspace): void {
+    this.workspace = workspace;
+  }
 
   runningChildren(parentRoomId?: string): SummonChild[] {
     const all = [...this.running.values()];

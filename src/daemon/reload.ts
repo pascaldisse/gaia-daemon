@@ -5,6 +5,7 @@
 // parameterized over a `host` shaped like Daemon so behaviour is unchanged —
 // see daemon.ts's thin delegating wrappers.
 
+import { loadWorkspace } from "../domain/workspace.js";
 import { serviceKey } from "./wiring.js";
 import type { ReloadHost } from "./ports.js";
 
@@ -13,7 +14,19 @@ import type { ReloadHost } from "./ports.js";
 export async function applySettingsChange(host: ReloadHost, scope: "global" | "workspace", workspaceId?: string): Promise<void> {
   host.hintSourcesCache = undefined;
   const keys = scope === "global" ? [...host.services.keys()] : workspaceId ? workspaceServiceKeys(host, workspaceId) : [];
-  await Promise.all(keys.map((key) => reloadService(host, key)));
+  await refreshSummonCoordinators(host, scope, workspaceId);
+await Promise.all(keys.map((key) => reloadService(host, key)));
+}
+/** Cached SummonCoordinators hold the boot-time workspace (agent roster). Swap in
+* a fresh one in place so new agents are summonable w/o restart; running lanes survive. */
+async function refreshSummonCoordinators(host: ReloadHost, scope: "global" | "workspace", workspaceId?: string): Promise<void> {
+const ids = scope === "global" ? [...host.summonCoordinators.keys()] : workspaceId && host.summonCoordinators.has(workspaceId) ? [workspaceId] : [];
+await Promise.all(ids.map(async (id) => {
+const record = await host.registry.find(id);
+const coordinator = host.summonCoordinators.get(id);
+if (!record || !coordinator) return;
+coordinator.updateWorkspace(await loadWorkspace(record.path));
+}));
 }
 
 export function workspaceServiceKeys(host: ReloadHost, workspaceId: string): string[] {

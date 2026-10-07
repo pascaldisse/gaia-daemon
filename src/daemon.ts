@@ -434,6 +434,8 @@ export class Daemon {
   private reloadHost(): ReloadHost {
     const daemon = this;
     return {
+      registry: daemon.registry,
+      summonCoordinators: daemon.summonCoordinators,
       services: daemon.services,
       pendingReloads: daemon.pendingReloads,
       get hintSourcesCache() { return daemon.hintSourcesCache; },

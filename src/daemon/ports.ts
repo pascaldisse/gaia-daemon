@@ -33,6 +33,8 @@ export interface WiringHost {
 }
 
 export interface ReloadHost {
+  readonly registry: WorkspaceRegistry;
+  readonly summonCoordinators: Map<string, SummonCoordinator>;
   readonly services: Map<string, RoomService>;
   readonly pendingReloads: Set<string>;
   hintSourcesCache: { toolNames: string[]; models: ModelChoice[] } | undefined;
