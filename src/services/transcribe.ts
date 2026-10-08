@@ -1,9 +1,8 @@
 // Voice input (dictation): one recorded clip → text, uniformly across STT
-// engines. This is the one-shot MIRROR of read-aloud.ts — read-aloud is
-// text→speech (a message spoken), this is speech→text (a clip transcribed):
+// engines. Mirror of tts.ts (text→speech); this is speech→text:
 //   1. engine registry — engines register as DATA (id + transcribe), the shared
 //      path never branches on an engine id (same law as harnesses and the TTS
-//      engines in read-aloud.ts)
+//      engines in tts.ts)
 //   2. replicate engine — hosted Whisper predictions over Replicate's HTTP API
 //   3. elevenlabs engine — the ElevenLabs "Scribe" API (reuses the TTS key)
 //   4. openai engine — any OpenAI-compatible /audio/transcriptions endpoint,

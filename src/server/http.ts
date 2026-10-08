@@ -38,7 +38,6 @@ import { forwardLlmRequest, LLM_PROXY_MOUNT, llmProxySubpath } from "../services
 import { configureRoomServiceReload } from "../services/room-service.js";
 import { summonAck } from "../services/summons.js";
 import { DEFAULT_PET_NAME, loadPet } from "./pet.js";
-import type { ReadAloudDelivery } from "../services/read-aloud.js";
 import { completionChunk, completionDone, completionPayload, isStreamingRequest, modelListPayload, newCompletionId } from "../services/voice.js";
 import { AUTH_COOKIE, beginSse, boolField, encodeSse, findAppBundleRoot, matchPath, pathInside, requestingHuman, stringField } from "./route.js";
 import { titleCaseId } from "./routes/agents.js";

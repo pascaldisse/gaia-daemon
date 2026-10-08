@@ -254,38 +254,22 @@ runs the service on a free port instead.
 - `scripts/voice-stack.sh` still exists to run the stack manually (GAIA will
   detect and reuse it instead of starting its own)
 
-### Read aloud (the transcript play button)
+### TTS (the transcript play button)
 
-Every committed agent message carries a ▶ button that speaks it: the server
-strips markdown for speech (code blocks, links, tables, emoji; tool calls are
-never part of the text), synthesizes with the author's TTS engine, and streams
-a WAV back. Engines are registered as data (`src/services/read-aloud.ts`) and
-selected per agent:
+▶ on an agent message → `POST /api/workspaces/:ws/rooms/:room/tts {eventId, segment}`
+→ segment N of the message as a complete audio file (header `x-tts-segments`).
+Server (`src/services/tts.ts`): markdown → speech text → segments (first short
+= fast first sound) → engine → disk cache `~/.gaia/cache/tts` (+ archive copy);
+renders segment N+1 in the background. Client (`web/src/tts.js`): one `<audio>`
+element plays segments in order; seek/pause native.
 
-- `kyutai` (default) — the bundled unmute TTS service, auto-started on demand
-- `claude` — a local claude-voice daemon (separate project) speaking with the
-  claude.ai "Read aloud" voices (`airy | buttery | mellow | glassy | rounded`)
-  through your own account; GAIA calls its `POST /synthesize` endpoint
+Engines (registered as data, never branched on):
+- `minimax` (default) — MiniMax speech-02 via Replicate (`replicateApiToken`, `minimax*` settings)
+- `claude` — local claude-voice daemon (`claudeVoiceUrl`, auto-start from `claudeVoiceDir`); voices `airy | buttery | mellow | glassy | rounded`
+- `elevenlabs` — ElevenLabs REST (`elevenLabsApiKey`, `elevenLabsVoice`, `elevenLabsModel`)
 
-Per-agent choice lives in `agent.json`:
-
-```json
-"tts": { "engine": "claude", "voice": "airy" }
-```
-
-Global defaults live in `~/.gaia/voice.json`: `ttsEngine` (fallback engine),
-`claudeVoiceUrl` (default `http://127.0.0.1:8778`) and `claudeVoiceDir` (a
-claude-voice checkout to auto-start when its daemon is down; empty = never).
-
-The same `tts.engine` also drives **voice calls**: if it declares `callBridge`
-(claude does), GAIA stands up a tiny protocol bridge
-(`src/services/voice-tts-bridge.ts`) that makes the engine look like a native
-unmute TTS server — so a call speaks with your claude-voice voice instead of the
-bundled TTS. The bridge speaks unmute's `/api/tts_streaming` msgpack socket on
-one side and streams `engine.synthesizeStream` (resampled to 24 kHz) on the
-other; a barge-in aborts generation. Engines without `callBridge` (kyutai) use
-the native unmute TTS, unchanged. No new config — an agent's `tts.engine`
-governs both surfaces.
+Per agent: `agent.json` `"tts": { "engine": "claude", "voice": "airy" }`;
+fallback `voice.json` `ttsEngine`. Chat calls speak replies through the same path.
 
 ## Roles
 
@@ -526,7 +510,7 @@ Optional `agent.json` fields:
 - `thinking`: thinking effort (`off`...`xhigh`); also changeable from the
   composer's `💭 #level` control and `/thinking`
 - `voice`: TTS voice for calls (an unmute `voices.yaml` entry)
-- `tts`: read-aloud engine + voice for the transcript play button, e.g.
+- `tts`: TTS engine + voice for the play button and chat calls, e.g.
   `{ "engine": "claude", "voice": "airy" }` (string shorthand `"claude:airy"`
   also works); default engine comes from `voice.json`'s `ttsEngine`
 - `harness`: which backend runs the agent — `pi` (default), `codex`, or

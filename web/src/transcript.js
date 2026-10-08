@@ -18,7 +18,7 @@ import { $, h } from "./dom.js";
 import { LinkedText } from "./links.js";
 import { boundedLines, diffBlock, filePreview, jsonHtml, resultNode } from "./rich.js";
 import { MarkdownMessage } from "./markdown.js";
-import { toggleReadAloud } from "./readaloud.js";
+import { toggleReadAloud } from "./tts.js";
 import { markDirty, registerRegion, setError } from "./render.js";
 import { state } from "./state.js";
 import { toolSummaryText } from "../shared/tool-summary.js";

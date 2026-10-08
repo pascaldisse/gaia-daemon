@@ -1,2 +1,0 @@
-PASS A→freeze→B: retired sources stopped/disconnected/buffer=null; stale+untagged frames rejected; B samples=663534
-PASS watchdog: recovered rebuild1 peak=0.34356689453125; terminal consecutive failures=2; position=3.184 bar=width: 7.68%; unchanged over 2s; browser errors=0

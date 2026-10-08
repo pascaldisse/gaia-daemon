@@ -7,9 +7,8 @@ import type { MemoryStore } from "../domain/memory.js";
 import { RoomService, writeRoomOrder } from "../services/room-service.js";
 import { MemoryService } from "../services/memory-service.js";
 import { VoiceStackManager, classifyVoiceTurn, clearCallOverride, persistCallOverride, readVoiceSettings, type VoiceSettings } from "../services/voice.js";
-import { readAloud, readAloudStream, resolveTtsChoice, ttsStackSettings, type ReadAloudDelivery, type ReadAloudResult, type TtsOverrides } from "../services/read-aloud.js";
+import { planSpeech, speakSegment, type SpeechChoice, type TtsClip } from "../services/tts.js";
 import { transcribe, type SttAudioInput } from "../services/transcribe.js";
-import { TtsCallBridge } from "../services/voice-tts-bridge.js";
 import { SttCallBridge } from "../services/voice-stt-bridge.js";
 import type { SummonCoordinator } from "../services/summons.js";
 import { roomIdsOnDisk, serviceKey } from "./wiring.js";
@@ -28,7 +27,6 @@ export class RoomInteractionLifecycle {
   readonly voiceStack = new VoiceStackManager(globalPaths.voiceLogsDir());
   activeCall: { workspaceId: string; info: VoiceCallInfo; settings: VoiceSettings } | undefined;
   voiceStarting = false;
-  private ttsBridge: TtsCallBridge | undefined;
   private sttBridge: SttCallBridge | undefined;
   private readonly selectionMutationTails = new Map<string, Promise<void>>();
   private readonly latestSelectionRequest = new Map<string, number>();
@@ -36,7 +34,6 @@ export class RoomInteractionLifecycle {
   constructor(private readonly host: RoomInteractionHost) {}
 
   dispose(): void {
-    this.ttsBridge?.stop();
     this.sttBridge?.stop();
     this.voiceStack.stop();
   }
@@ -376,24 +373,6 @@ export class RoomInteractionLifecycle {
 
     const settings = await readVoiceSettings();
 
-    // The call TTS resolves EXACTLY like read-aloud (agent.tts.engine over the
-    // voice.json default): an engine that declares `callBridge` (claude-voice)
-    // gets a gaia protocol bridge unmute talks to instead of the bundled moshi
-    // TTS. Default (kyutai) → the native service, unchanged.
-    const ttsChoice = resolveTtsChoice(agent, settings);
-    let ttsEndpoint: string | undefined;
-    if (ttsChoice.engine.callBridge) {
-      const bridge = new TtsCallBridge({
-        ensureTts: (onStatus) => this.voiceStack.ensureTts(ttsStackSettings(settings), onStatus),
-        log: (message) => this.host.log(message),
-      });
-      const { wsUrl } = await bridge.start(ttsChoice.engine, ttsChoice.voice, settings);
-      this.ttsBridge?.stop();
-      this.ttsBridge = bridge;
-      ttsEndpoint = wsUrl;
-      this.host.log(`voice: routing @${agent.id}'s call TTS through the ${ttsChoice.engine.id} bridge (voice: ${ttsChoice.voice ?? "default"})`);
-    }
-
     // Replicate is one-shot transcription, so the bridge presents it as the
     // native unmute streaming STT protocol. kyutai remains the untouched native
     // default; unknown settings deliberately retain that safe default.
@@ -417,7 +396,6 @@ export class RoomInteractionLifecycle {
           autoStart: settings.autoStart,
           startTimeoutMs: settings.startTimeoutSec * 1000,
           silenceTimeoutSec: settings.speakOnSilence ? settings.silenceDelaySec : null,
-          ttsEndpoint,
           sttEndpoint,
         },
         gaiaUrl,
@@ -427,8 +405,6 @@ export class RoomInteractionLifecycle {
       ));
     } catch (error) {
       // A failed stack start must not leak the bridge listener.
-      this.ttsBridge?.stop();
-      this.ttsBridge = undefined;
       this.sttBridge?.stop();
       this.sttBridge = undefined;
       throw error;
@@ -442,7 +418,7 @@ export class RoomInteractionLifecycle {
       unmuteUrl,
       // The bridge owns the voice (baked into its engine); leave the unmute
       // session voice unset so it never validates a claude voice name.
-      ...(agent.voice && !ttsEndpoint ? { voice: agent.voice } : {}),
+      ...(agent.voice ? { voice: agent.voice } : {}),
       // Voice latency: thinking defaults off during the call; the agent's own
       // level returns on hang-up (durably — survives a crash mid-call).
       ...(settings.disableThinking ? { thinking: "off" } : {}),
@@ -465,8 +441,6 @@ export class RoomInteractionLifecycle {
     }
     // Tear down call bridges, then stop exactly the services GAIA spawned;
     // externally started services are left alone.
-    this.ttsBridge?.stop();
-    this.ttsBridge = undefined;
     this.sttBridge?.stop();
     this.sttBridge = undefined;
     this.voiceStack.stop();
@@ -485,48 +459,17 @@ export class RoomInteractionLifecycle {
     await service.resolveContextGate(choice, n);
   }
 
-  /** Read one committed agent message aloud: resolve the author's TTS engine +
-   * voice, format the text for speech, and return one chunk of the audio
-   * (cached on disk; the result carries the chunk count for the client). */
-  async readAloud(workspaceId: string, roomId: string, eventId: string, chunk = 0, regenerate = false, overrides: TtsOverrides = {}): Promise<ReadAloudResult> {
+  /** Speak one committed agent message: segment `segment` of its speech as a
+   * complete audio file (engine/voice resolved by planSpeech, never branched
+   * on here). display:true → a collared room speaks the SAME capped text it shows. */
+  async speak(workspaceId: string, roomId: string, eventId: string, segment: number, choice: SpeechChoice & { regenerate?: string } = {}): Promise<TtsClip & { segments: number; engine: string; voice: string }> {
     const service = await this.host.serviceFor(workspaceId, roomId);
-    // display:true — a collared room reads aloud the SAME capped text it
-    // shows (09-DOG-MODE, Pascal 2026-08-23); the stored event keeps the full
-    // reply, this just derives what a human hears.
     const event = await service.eventById(eventId, { display: true });
     if (!event) throw new Error(`Unknown event: ${eventId}`);
     const settings = await readVoiceSettings();
-    return readAloud({
-      event,
-      agent: service.workspace.agents[event.author],
-      settings,
-      chunk,
-      regenerate,
-      ...overrides,
-      ensureTts: (onStatus) => this.voiceStack.ensureTts(ttsStackSettings(settings), onStatus),
-      log: (message) => this.host.log(message),
-    });
-  }
-
-  /** Read a message aloud as the desktop app does: for engines that stream, one
-   * continuous PCM pass played frame-by-frame (mode "stream"); for batch-only
-   * engines (local TTS), mode "chunks" so the client keeps the per-chunk path.
-   * The author's engine decides — this method never branches on the engine. */
-  async readAloudStream(workspaceId: string, roomId: string, eventId: string, regenerate = false, overrides: TtsOverrides = {}): Promise<ReadAloudDelivery> {
-    const service = await this.host.serviceFor(workspaceId, roomId);
-    // display:true — same reasoning as readAloud above.
-    const event = await service.eventById(eventId, { display: true });
-    if (!event) throw new Error(`Unknown event: ${eventId}`);
-    const settings = await readVoiceSettings();
-    return readAloudStream({
-      event,
-      agent: service.workspace.agents[event.author],
-      settings,
-      regenerate,
-      ...overrides,
-      ensureTts: (onStatus) => this.voiceStack.ensureTts(ttsStackSettings(settings), onStatus),
-      log: (message) => this.host.log(message),
-    });
+    const plan = planSpeech(event.text, service.workspace.agents[event.author]?.tts, settings, choice);
+    const clip = await speakSegment(plan, segment, settings, { regenerate: choice.regenerate, log: (message) => this.host.log(message) });
+    return { ...clip, segments: plan.segments.length, engine: plan.engine.id, voice: plan.voice };
   }
 
   /** Transcribe one recorded clip → text (composer dictation / voice input).

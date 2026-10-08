@@ -8,7 +8,7 @@ import { artifactPanelOpen, toggleArtifactPanel } from "./design/artifacts.js";
 import { api } from "./api.js";
 import { $, h } from "./dom.js";
 import { LinkedText, PathText } from "./links.js";
-import { stopReadAloud } from "./readaloud.js";
+import { stopReadAloud } from "./tts.js";
 import { clearError, markDirty, registerRegion, setError } from "./render.js";
 import { openSearch } from "./search.js";
 import { runningSummonRooms, state } from "./state.js";

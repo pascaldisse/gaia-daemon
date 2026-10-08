@@ -7,8 +7,7 @@ import {
   SttCallBridge,
   type SttBridgeDeps,
 } from "../src/services/voice-stt-bridge.js";
-import { unpackMessage } from "../src/services/read-aloud.js";
-import { packMsg } from "../src/services/voice-tts-bridge.js";
+import { packMsg, unpackMessage } from "../src/services/audio-wire.js";
 import { VOICE_SETTINGS_DEFAULTS } from "../src/services/voice.js";
 
 function connect(url: string): Promise<WebSocket> {

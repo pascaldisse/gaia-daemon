@@ -67,7 +67,7 @@ import { isNative, isNativeWindowFocused } from "./native.js";
  *   dictationBars: number[],
  *   dictationError: string,
  *   dictationDrafts: {id: string, bytes: number, mtimeMs: number}[],
- *   readAloud: {eventId: string, phase: "loading"|"playing"|"paused"|"ended"|"dead", workspaceId: string, roomId: string}|null,
+ *   readAloud: {eventId: string, phase: "loading"|"playing"|"paused"|"ended", workspaceId: string, roomId: string}|null,
  *   dario: {open: boolean, loading: boolean, proposal: SanitizeProposal|null, error: string, selected: Set<string>, knownAt: string|null, lastAutoEventId: string},
  *   contextGate: {resolving: boolean, error: string, lastN: number},
  *   search: {open: boolean, scope: "chatwide"|"room", query: string, workspace: string, hits: ChatSearchHit[], degraded: string[], loading: boolean, seq: number, active: number, highlightEventId: string},

@@ -2,7 +2,7 @@ import { api } from "./api.js";
 import { markDirty, setError } from "./render.js";
 import { state } from "./state.js";
 import { openDictationMicrophone, pickMimeType, postClip } from "./dictation.js";
-import { startReadAloud, stopReadAloud } from "./readaloud.js";
+import { startReadAloud, stopReadAloud } from "./tts.js";
 import { VoiceCall } from "./voice-call.js";
 import { voiceCallConfig } from "../shared/voice-call-config.js";
 

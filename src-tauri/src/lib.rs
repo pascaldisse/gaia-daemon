@@ -3,12 +3,6 @@ mod daemon_lifecycle;
 #[cfg(feature = "webkit")]
 mod debug_server;
 
-// CoreAudio default-output-device watchdog (TTS-mute 3rd recurrence, 09-23,
-// whip 461) — macOS-only native signal below the WebAudio graph; see the
-// module doc comment for why the web-side watchdogs cannot cover this case.
-#[cfg(all(feature = "webkit", target_os = "macos"))]
-mod output_device_watch;
-
 #[cfg(feature = "webkit")]
 mod webkit {
     // The GAIA native shell.
@@ -700,13 +694,6 @@ mod webkit {
                 let main_window = main_window_builder.build()?;
                 install_ios_scroll_inset_fix(&main_window);
                 crate::debug_server::spawn(app.handle().clone());
-
-                // Native default-output-device watchdog: see output_device_watch
-                // module doc for why the web-side watchdogs (analyser RMS, clock
-                // stall, mediaDevices devicechange) cannot see a hardware-level
-                // route switch. Best-effort, never blocks window startup.
-                #[cfg(all(feature = "webkit", target_os = "macos"))]
-                crate::output_device_watch::install(app.handle().clone());
 
                 Ok(())
             })

@@ -3,7 +3,6 @@ import { stat } from "node:fs/promises";
 import { ATTACHMENT_MAX_BYTES, attachmentMime } from "../../core/attachments.js";
 import { json, parseBody, readRawBody } from "../../core/http.js";
 import type { UiPromptReplyValue } from "../../core/types.js";
-import type { ReadAloudDelivery, TtsCacheIdentity } from "../../services/read-aloud.js";
 import { addArchtreeRoot } from "../../services/archtree.js";
 import { matchPath, boolField, respond, requireRoomAccess, requestingHuman, stringField, type RouteContext } from "../route.js";
 
@@ -403,115 +402,36 @@ async function roomContextGate(ctx: RouteContext): Promise<boolean> {
   }
   return true;
 }
-function ttsIdentityHeaders(identity: TtsCacheIdentity): Record<string, string> {
-  return { "x-tts-voice": encodeURIComponent(identity.voice), "x-tts-model": encodeURIComponent(identity.model), "x-tts-text-hash": identity.textHash };
-}
-
-// Read-aloud: one committed agent message → speech audio (the transcript
-// play button), one chunk per request. The daemon resolves the author's
-// engine+voice; this layer only streams the bytes. The x-tts-chunks
-// header tells the client how many chunks to fetch/play in sequence.
-async function roomReadAloud(ctx: RouteContext): Promise<boolean> {
-  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/read-aloud$/);
+// TTS: one committed agent message → segment N of its speech as a complete
+// audio file. Daemon resolves engine+voice; this layer sends bytes.
+// x-tts-segments tells the client how many segments to play in sequence.
+async function roomTts(ctx: RouteContext): Promise<boolean> {
+  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/tts$/);
   if (ctx.request.method !== "POST" || !params) return false;
   const body = await parseBody(ctx.request);
-  const eventId = stringField(body, "eventId");
-  if (!eventId?.trim()) { json(ctx.response, 400, { error: "Missing eventId" }); return true; }
-  const chunkRaw = body && typeof body === "object" ? (body as Record<string, unknown>).chunk : undefined;
-  const chunk = typeof chunkRaw === "number" && Number.isInteger(chunkRaw) && chunkRaw >= 0 ? chunkRaw : 0;
-  const regenerate = Boolean(body && typeof body === "object" && (body as Record<string, unknown>).regenerate === true);
+  const eventId = stringField(body, "eventId")?.trim();
+  if (!eventId) { json(ctx.response, 400, { error: "Missing eventId" }); return true; }
+  const raw = body && typeof body === "object" ? (body as Record<string, unknown>).segment : undefined;
+  const segment = typeof raw === "number" && Number.isInteger(raw) && raw >= 0 ? raw : 0;
   try {
-    const audio = await ctx.daemon.readAloud(params[0], params[1], eventId.trim(), chunk, regenerate, { engine: stringField(body, "engine"), voice: stringField(body, "voice"), model: stringField(body, "model") });
-    ctx.response.writeHead(200, {
-      "content-type": audio.contentType,
-      "content-length": audio.audio.length,
-      "cache-control": "no-store",
-      ...ttsIdentityHeaders(audio.identity),
-      "x-tts-chunks": String(audio.chunks),
-      "x-tts-chunk": String(audio.chunk),
+    const clip = await ctx.daemon.speak(params[0], params[1], eventId, segment, {
+      engine: stringField(body, "engine"),
+      voice: stringField(body, "voice"),
+      regenerate: stringField(body, "regenerate"),
     });
-    ctx.response.end(audio.audio);
+    ctx.response.writeHead(200, {
+      "content-type": clip.mime,
+      "content-length": clip.audio.length,
+      "cache-control": "no-store",
+      "x-tts-segments": String(clip.segments),
+      "x-tts-engine": encodeURIComponent(clip.engine),
+      "x-tts-voice": encodeURIComponent(clip.voice),
+    });
+    ctx.response.end(clip.audio);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    json(
-      ctx.response,
-      message.startsWith("Unknown event") ? 404 : message.startsWith("Only agent") || message.startsWith("Nothing to read") || message.startsWith("Unknown chunk") ? 400 : 502,
-      { error: message },
-    );
+    json(ctx.response, message.startsWith("Unknown event") ? 404 : /^(Nothing speakable|segment \d+ out of range|Unknown TTS engine)/.test(message) ? 400 : 502, { error: message });
   }
-  return true;
-}
-// Read-aloud, streamed: the whole message as one continuous PCM pass, played
-// frame-by-frame as it is generated (the claude.ai desktop-app path). The
-// author's engine decides the mode — a batch-only engine answers "chunks",
-// and the client keeps the per-chunk /read-aloud path above.
-async function roomReadAloudStream(ctx: RouteContext): Promise<boolean> {
-  const params = matchPath(ctx.url.pathname, /^\/api\/workspaces\/([^/]+)\/rooms\/([^/]+)\/read-aloud\/stream$/);
-  if (ctx.request.method !== "POST" || !params) return false;
-  const body = await parseBody(ctx.request);
-  const eventId = stringField(body, "eventId");
-  if (!eventId?.trim()) { json(ctx.response, 400, { error: "Missing eventId" }); return true; }
-  const regenerate = Boolean(body && typeof body === "object" && (body as Record<string, unknown>).regenerate === true);
-  let delivery: ReadAloudDelivery;
-  try {
-    delivery = await ctx.daemon.readAloudStream(params[0], params[1], eventId.trim(), regenerate, { engine: stringField(body, "engine"), voice: stringField(body, "voice"), model: stringField(body, "model") });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    json(
-      ctx.response,
-      message.startsWith("Unknown event") ? 404 : message.startsWith("Only agent") || message.startsWith("Nothing to read") ? 400 : 502,
-      { error: message },
-    );
-    return true;
-  }
-  for (const [key, value] of Object.entries(ttsIdentityHeaders(delivery.identity))) ctx.response.setHeader(key, value);
-  if (delivery.mode === "chunks") {
-    ctx.response.setHeader("cache-control", "no-store");
-    json(ctx.response, 200, { mode: "chunks", chunks: delivery.chunks, voice: delivery.identity.voice, model: delivery.identity.model });
-    return true;
-  }
-  ctx.response.writeHead(200, {
-    "content-type": "audio/pcm",
-    "cache-control": "no-store",
-    "x-tts-mode": "stream",
-    "x-tts-rate": String(delivery.format.sampleRate),
-    "x-tts-channels": String(delivery.format.channels),
-    "x-tts-bits": String(delivery.format.bitsPerSample),
-  });
-  let clientGone = false;
-  ctx.response.on("close", () => { clientGone = true; });
-  // Test-only fault injection (default off): abort the stream after N frames so
-  // the truncation path can be exercised live. Never hardcoded on.
-  const failAfter = Number(process.env.GAIA_TTS_FAIL_AFTER_FRAMES ?? "");
-  const failAt = Number.isInteger(failAfter) && failAfter > 0 ? failAfter : 0;
-  let sent = 0;
-  let streamError: unknown = null;
-  try {
-    for await (const frame of delivery.frames) {
-      if (clientGone || ctx.response.writableEnded) break;
-      if (failAt && sent >= failAt) throw new Error(`GAIA_TTS_FAIL_AFTER_FRAMES=${failAt}: injected mid-stream TTS failure`);
-      if (!ctx.response.write(frame)) {
-        await new Promise<void>((resolveWrite) => {
-          const done = (): void => { ctx.response.off("drain", done); ctx.response.off("close", done); resolveWrite(); };
-          ctx.response.once("drain", done);
-          ctx.response.once("close", done);
-        });
-      }
-      sent += 1;
-    }
-  } catch (error) {
-    streamError = error;
-  }
-  if (streamError && !clientGone) {
-    // Headers are already sent, so a clean end() is indistinguishable from a
-    // complete stream: the client would silently play a truncated clip. Destroy
-    // the response instead — the client sees a network error and can surface it.
-    const failure = streamError instanceof Error ? streamError : new Error(String(streamError));
-    console.error(`[read-aloud] mid-stream TTS failure workspace=${params[0]} room=${params[1]} event=${eventId.trim()} after ${sent} frames: ${failure.message}`);
-    ctx.response.destroy(failure);
-    return true;
-  }
-  if (!ctx.response.writableEnded) ctx.response.end();
   return true;
 }
 
@@ -546,8 +466,7 @@ const roomHandlers = [
   roomQueueDelete,
   deleteRoom,
   roomContextGate,
-  roomReadAloud,
-  roomReadAloudStream,
+  roomTts,
 ];
 export async function handleRooms(ctx: RouteContext): Promise<boolean> {
   for (const handler of roomHandlers) if (await handler(ctx)) return true;

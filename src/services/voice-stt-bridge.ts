@@ -1,6 +1,6 @@
 // Voice-call STT bridge: presents Replicate's one-shot transcription as
 // unmute's streaming `/api/asr-streaming` msgpack WebSocket protocol. The
-// socket and frame handling intentionally mirror voice-tts-bridge.ts; only
+// socket handling is self-contained; only
 // the audio direction differs. The backend emits one Step per incoming audio
 // block, where prs[2] is its pause probability.
 
@@ -8,9 +8,8 @@ import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { Socket } from "node:net";
 import { json } from "../core/http.js";
-import { pcmToWav, unpackMessage } from "./read-aloud.js";
+import { packMsg, pcmToWav, unpackMessage } from "./audio-wire.js";
 import { transcribe, type TranscribeRequest } from "./transcribe.js";
-import { packMsg } from "./voice-tts-bridge.js";
 import type { VoiceSettings } from "./voice.js";
 
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";

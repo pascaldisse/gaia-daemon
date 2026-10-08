@@ -51,8 +51,8 @@ export interface VoiceSettings {
   silenceDelaySec: number;
   /** Force thinking off during voice calls; restored on hang-up. */
   disableThinking: boolean;
-  /** Default read-aloud TTS engine for the transcript play button; agents
-   * override per-persona via agent.json `tts.engine`. */
+  /** Default TTS engine (services/tts.ts registry id: claude | elevenlabs |
+   * minimax); agents override via agent.json `tts.engine`. */
   ttsEngine: string;
   /** Append-only archive of rendered read-aloud clips. Empty uses
    * ~/.gaia/voice-archive/tts, resolved at runtime. */
@@ -61,12 +61,6 @@ export interface VoiceSettings {
   claudeVoiceUrl: string;
   /** Explicit fallback voice for Claude requests with no agent voice. */
   claudeVoice: string;
-  /** Seconds to wait for Claude's first PCM frame after HTTP success. */
-  claudeVoiceFirstFrameTimeoutSec: number;
-  /** Retry count after an empty/failed Claude audio response. */
-  claudeVoiceRetryCount: number;
-  /** Maximum pending live-Claude input chunks before failing the request. */
-  claudeVoiceQueueLimit: number;
   /** claude-voice checkout to auto-start when its daemon is down ("" = never
    * auto-start; the engine then requires the daemon to already be running). */
   claudeVoiceDir: string;
@@ -118,7 +112,7 @@ export interface VoiceSettings {
   minimaxVoice: string;
   /** Replicate model slug for the "minimax" read-aloud engine (owner/name);
    * speech-02-turbo trades a little quality for materially lower latency than
-   * speech-02-hd — see the read-aloud test proof for measured numbers. */
+   * speech-02-hd. */
   minimaxModel: string;
   /** MiniMax speech rate, Replicate `speed` (0.5-2, default 1). */
   minimaxSpeed: number;
@@ -131,16 +125,6 @@ export interface VoiceSettings {
   minimaxEmotion: string;
   /** MiniMax `english_normalization` (spells out numbers/abbreviations; default true). */
   minimaxNormalize: boolean;
-  /** How many chunks AFTER the one just requested `readAloud()` renders into
-   * the cache in the background while this one is synthesizing/playing (0 =
-   * no prefetch, default 2). Latency lever for the serial "chunks" playback
-   * mode — minimax has no synthesizeStream/duplex, so this is the only way a
-   * slow chunk doesn't leave playback waiting on a cold Replicate call. */
-  minimaxPrefetch: number;
-  /** Poll interval (ms) while waiting on a MiniMax Replicate prediction that
-   * didn't finish within the `Prefer: wait=60` inline window (default 250;
-   * was a hardcoded 1000). */
-  minimaxPollMs: number;
   /** Pause length (seconds) inserted as a MiniMax `<#Ns#>` tag at every block
    * boundary (paragraph, heading, list item, ...) `speakableText` leaves as a
    * `\n` (default 0.3; 0 disables the markers entirely). */
@@ -158,15 +142,12 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   speakOnSilence: true,
   silenceDelaySec: 7,
   disableThinking: true,
-  ttsEngine: "kyutai",
+  ttsEngine: "minimax",
   // Empty = ~/.gaia/voice-archive/tts, resolved at runtime; never persist a
   // stale absolute home path in voice.json.
   ttsArchiveDir: "",
   claudeVoiceUrl: "http://127.0.0.1:8778",
   claudeVoice: "airy",
-  claudeVoiceFirstFrameTimeoutSec: 15,
-  claudeVoiceRetryCount: 1,
-  claudeVoiceQueueLimit: 64,
   claudeVoiceDir: "",
   elevenLabsApiKey: "",
   elevenLabsModel: "eleven_v3",
@@ -197,8 +178,6 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceSettings = {
   minimaxVolume: 1,
   minimaxEmotion: "auto",
   minimaxNormalize: true,
-  minimaxPrefetch: 2,
-  minimaxPollMs: 250,
   minimaxParagraphPauseS: 0.3,
 };
 
@@ -247,9 +226,6 @@ export async function readVoiceSettings(): Promise<VoiceSettings> {
   if (typeof raw.ttsArchiveDir === "string") settings.ttsArchiveDir = raw.ttsArchiveDir.trim();
   if (typeof raw.claudeVoiceUrl === "string" && raw.claudeVoiceUrl.trim()) settings.claudeVoiceUrl = raw.claudeVoiceUrl.trim();
   if (typeof raw.claudeVoice === "string" && raw.claudeVoice.trim()) settings.claudeVoice = raw.claudeVoice.trim();
-  if (typeof raw.claudeVoiceFirstFrameTimeoutSec === "number" && raw.claudeVoiceFirstFrameTimeoutSec > 0) settings.claudeVoiceFirstFrameTimeoutSec = raw.claudeVoiceFirstFrameTimeoutSec;
-  if (typeof raw.claudeVoiceRetryCount === "number" && Number.isInteger(raw.claudeVoiceRetryCount) && raw.claudeVoiceRetryCount >= 0) settings.claudeVoiceRetryCount = raw.claudeVoiceRetryCount;
-  if (typeof raw.claudeVoiceQueueLimit === "number" && Number.isInteger(raw.claudeVoiceQueueLimit) && raw.claudeVoiceQueueLimit > 0) settings.claudeVoiceQueueLimit = raw.claudeVoiceQueueLimit;
   if (typeof raw.claudeVoiceDir === "string" && raw.claudeVoiceDir.trim()) settings.claudeVoiceDir = raw.claudeVoiceDir.trim();
   if (typeof raw.elevenLabsApiKey === "string" && raw.elevenLabsApiKey.trim()) settings.elevenLabsApiKey = raw.elevenLabsApiKey.trim();
   if (typeof raw.elevenLabsModel === "string" && raw.elevenLabsModel.trim()) settings.elevenLabsModel = raw.elevenLabsModel.trim();
@@ -273,8 +249,6 @@ export async function readVoiceSettings(): Promise<VoiceSettings> {
   if (typeof raw.minimaxVolume === "number" && raw.minimaxVolume >= 0 && raw.minimaxVolume <= 10) settings.minimaxVolume = raw.minimaxVolume;
   if (typeof raw.minimaxEmotion === "string" && MINIMAX_EMOTIONS.includes(raw.minimaxEmotion.trim())) settings.minimaxEmotion = raw.minimaxEmotion.trim();
   if (typeof raw.minimaxNormalize === "boolean") settings.minimaxNormalize = raw.minimaxNormalize;
-  if (typeof raw.minimaxPrefetch === "number" && Number.isInteger(raw.minimaxPrefetch) && raw.minimaxPrefetch >= 0) settings.minimaxPrefetch = raw.minimaxPrefetch;
-  if (typeof raw.minimaxPollMs === "number" && raw.minimaxPollMs > 0) settings.minimaxPollMs = raw.minimaxPollMs;
   if (typeof raw.minimaxParagraphPauseS === "number" && raw.minimaxParagraphPauseS >= 0) settings.minimaxParagraphPauseS = raw.minimaxParagraphPauseS;
   // No explicit override → resolve the bundled checkout now, so the path tracks
   // wherever the daemon currently runs from instead of a value frozen at seed time.
@@ -300,11 +274,6 @@ export interface VoiceStackSettings {
   // Seconds before unmute nudges the agent to fill a silence; null disables
   // the nudges entirely (the backend gets an effectively-infinite timeout).
   silenceTimeoutSec?: number | null;
-  // An already-running TTS server (ws://…) to point unmute at instead of
-  // spawning the bundled moshi service — the gaia TTS bridge uses this to route
-  // a call through a read-aloud engine (e.g. claude-voice). When set, the stack
-  // never resolves or spawns its own tts service.
-  ttsEndpoint?: string;
   // An already-running STT server (ws://…) to point unmute at instead of
   // spawning bundled Moshi — the Replicate call bridge implements its stream.
   sttEndpoint?: string;
@@ -495,18 +464,17 @@ export class VoiceStackManager {
     // Moshi service entirely: we neither resolve nor spawn that child, and point
     // the backend straight at the bridge.
     const externalStt = settings.sttEndpoint?.trim();
-    const externalTts = settings.ttsEndpoint?.trim();
     const [stt, tts, backend] = await Promise.all([
       externalStt ? Promise.resolve(null) : this.resolveService("stt", STT_PORT, onStatus),
-      externalTts ? Promise.resolve(null) : this.resolveService("tts", TTS_PORT, onStatus),
+      this.resolveService("tts", TTS_PORT, onStatus),
       this.resolveService("backend", configuredBackendPort(settings.unmuteUrl), onStatus),
     ]);
     const sttUrl = externalStt ?? `ws://localhost:${stt!.port}`;
-    const ttsUrl = externalTts ?? `ws://localhost:${tts!.port}`;
+    const ttsUrl = `ws://localhost:${tts.port}`;
 
     const specs: ServiceSpec[] = [
       ...(stt ? [{ name: "stt", script: "macos/start_stt_metal.sh", port: stt.port, env: { STT_PORT: String(stt.port) } }] : []),
-      ...(tts ? [{ name: "tts", script: "macos/start_tts_mlx.sh", port: tts.port, env: { TTS_MLX_PORT: String(tts.port) } }] : []),
+      { name: "tts", script: "macos/start_tts_mlx.sh", port: tts.port, env: { TTS_MLX_PORT: String(tts.port) } },
       {
         name: "backend",
         script: "macos/start_backend.sh",
@@ -521,7 +489,7 @@ export class VoiceStackManager {
         },
       },
     ];
-    const needsSpawn: Record<string, boolean> = { backend: backend.spawn, ...(stt ? { stt: stt.spawn } : {}), ...(tts ? { tts: tts.spawn } : {}) };
+    const needsSpawn: Record<string, boolean> = { backend: backend.spawn, ...(stt ? { stt: stt.spawn } : {}), tts: tts.spawn };
     const spawnService = this.hooks.spawnService ?? defaultSpawnService;
     for (const spec of specs) {
       if (!needsSpawn[spec.name]) continue;
@@ -534,48 +502,6 @@ export class VoiceStackManager {
     const unmuteUrl = `ws://127.0.0.1:${backend.port}`;
     await this.waitForHealthy(settings, wsToHttp(unmuteUrl), onStatus);
     return { unmuteUrl };
-  }
-
-  /**
-   * Read-aloud path: makes sure just the TTS service is reachable (reusing a
-   * live one — ours or external — or spawning it), and returns its HTTP base
-   * URL. The spawned child joins `children`, so a later full-stack call reuses
-   * it and hang-up/exit cleanup applies uniformly.
-   */
-  async ensureTts(settings: VoiceStackSettings, onStatus: (message: string) => void): Promise<{ ttsUrl: string }> {
-    const tts = await this.resolveService("tts", TTS_PORT, onStatus);
-    const ttsUrl = `http://127.0.0.1:${tts.port}`;
-    if (tts.spawn) {
-      if (!settings.autoStart) throw new Error("TTS service is not running and voice auto-start is disabled");
-      if (!existsSync(join(settings.unmuteDir, "macos"))) {
-        throw new Error(`unmute checkout not found at ${settings.unmuteDir} (set voice.unmuteDir in ~/.gaia/voice.json)`);
-      }
-      mkdirSync(this.logDir, { recursive: true });
-      const spawnService = this.hooks.spawnService ?? defaultSpawnService;
-      onStatus("voice: starting tts...");
-      const spec: ServiceSpec = { name: "tts", script: "macos/start_tts_mlx.sh", port: tts.port, env: { TTS_MLX_PORT: String(tts.port) } };
-      this.children.set("tts", { handle: spawnService(spec, settings.unmuteDir, join(this.logDir, "tts.log")), port: tts.port });
-      this.installExitHooks();
-    }
-
-    const probeHttpOk = this.hooks.probeHttpOk ?? defaultProbeHttpOk;
-    const interval = this.hooks.pollIntervalMs ?? 1500;
-    const deadline = Date.now() + settings.startTimeoutMs;
-    let announced = false;
-    while (Date.now() < deadline) {
-      const child = this.children.get("tts");
-      if (child?.handle.exited) {
-        this.children.delete("tts");
-        throw new Error(`voice service tts exited during startup - see ${join(this.logDir, "tts.log")}`);
-      }
-      if (await probeHttpOk(`${ttsUrl}${CHECK_PATHS.tts}`)) return { ttsUrl };
-      if (!announced) {
-        announced = true;
-        onStatus("voice: waiting for tts... (first start loads models)");
-      }
-      await sleep(interval);
-    }
-    throw new Error(`TTS service did not become healthy within ${Math.round(settings.startTimeoutMs / 1000)}s - logs in ${this.logDir}`);
   }
 
   // Hang-up: stop only the services GAIA itself spawned.

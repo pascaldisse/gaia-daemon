@@ -16,7 +16,7 @@ import { $, h } from "./dom.js";
 import { shortModel } from "./models.js";
 import { agentReasoning, reasoningToggleTarget, reasoningView } from "./reasoning.js";
 import { markDirty, registerRegion, setError } from "./render.js";
-import { buildAudioPlayer } from "./readaloud.js";
+import { buildAudioPlayer } from "./tts.js";
 import { activeTask, isBusy, runningSummonRooms, state } from "./state.js";
 import { setArtifactPanelOpen, toggleArtifactPanel } from "./design/artifacts.js";
 import { toggleCall } from "./voice.js";
@@ -213,7 +213,7 @@ export function initComposer() {
   form.replaceChildren(
     autocompleteEl,
     // The read-aloud mini player (play/pause + seekable timeline). Built once and
-    // driven by readaloud.js; sits above the running banner, hidden until a
+    // driven by tts.js; sits above the running banner, hidden until a
     // message is played.
     buildAudioPlayer(),
     bannerEl,

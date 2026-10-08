@@ -775,7 +775,6 @@ export class Daemon {
   async stopVoiceCall(...args: Parameters<RoomInteractionLifecycle["stopVoiceCall"]>) { return this.interactions.stopVoiceCall(...args); }
   classifyTurn(...args: Parameters<RoomInteractionLifecycle["classifyTurn"]>) { return this.interactions.classifyTurn(...args); }
   async resolveContextGate(...args: Parameters<RoomInteractionLifecycle["resolveContextGate"]>) { return this.interactions.resolveContextGate(...args); }
-  async readAloud(...args: Parameters<RoomInteractionLifecycle["readAloud"]>) { return this.interactions.readAloud(...args); }
-  async readAloudStream(...args: Parameters<RoomInteractionLifecycle["readAloudStream"]>) { return this.interactions.readAloudStream(...args); }
+  async speak(...args: Parameters<RoomInteractionLifecycle["speak"]>) { return this.interactions.speak(...args); }
   async transcribe(...args: Parameters<RoomInteractionLifecycle["transcribe"]>) { return this.interactions.transcribe(...args); }
 }

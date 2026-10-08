@@ -25,7 +25,7 @@ import { discoverSkills } from "../domain/skills.js";
 import { DEFAULT_AGENT_TOOLS } from "../domain/agents.js";
 import { globalRoleDefaults } from "../domain/roles.js";
 import { listAccounts } from "../domain/accounts.js";
-import { findTtsEngine, ttsEngineIds, type TtsEngineSpec } from "./read-aloud.js";
+import { findTtsEngine, ttsEngineIds, type TtsEngine } from "./tts.js";
 import { sttEngineIds } from "./transcribe.js";
 
 // The settings wire shapes live in src/core/types.ts (the shared-type home,
@@ -410,10 +410,10 @@ function hooksHints(): FileHints {
 // the registry (engines with none — free-form voices — are skipped). A newly
 // registered engine's voices surface here without touching shared code; never
 // a hardcoded engine id.
-function ttsVoiceCatalog(): TtsEngineSpec[] {
+function ttsVoiceCatalog(): TtsEngine[] {
   return ttsEngineIds()
     .map((id) => findTtsEngine(id))
-    .filter((engine): engine is TtsEngineSpec => Boolean(engine?.voices.length));
+    .filter((engine): engine is TtsEngine => Boolean(engine?.voices.length));
 }
 
 function ttsVoiceHintDescription(): string {
@@ -536,12 +536,12 @@ function agentJsonHints(sources: HintSources, parsed?: Record<string, unknown>, 
     voice: select(ttsVoiceOptions(), {
       optional: true,
       label: "Native call voice (unmute)",
-      description: "native unmute call voice (a voices.yaml id); ignored when tts.engine drives the call (e.g. claude)",
+      description: "native unmute call voice (a voices.yaml id); unmute call stack only",
     }),
     "tts.engine": select(values(ttsEngineIds()), {
       optional: true,
       label: "Voice mode for this agent",
-      description: "Which voice this agent speaks with — read-aloud AND live calls (claude routes calls through the bridge). Overrides the workspace default; leave unset to inherit voice.json.",
+      description: "Which TTS engine speaks this agent's messages (play button + chat calls). Overrides the workspace default; leave unset to inherit voice.json.",
     }),
     "tts.voice": {
       input: "text",
@@ -578,7 +578,7 @@ function voiceJsonHints(): FileHints {
     ttsEngine: select(values(ttsEngineIds()), {
       optional: true,
       label: "Voice mode (default TTS engine)",
-      description: "Which voice speaks — kyutai (local), claude (claude.ai voices), or elevenlabs. This is the workspace default; an agent overrides it in its own settings (tts.engine).",
+      description: "Which TTS engine speaks — claude (claude.ai voices via claude-voice), elevenlabs, or minimax (Replicate). This is the workspace default; an agent overrides it in its own settings (tts.engine).",
     }),
     ttsArchiveDir: { input: "text", optional: true, label: "Read-aloud archive", description: "Append-only archive of rendered read-aloud audio; empty = ~/.gaia/voice-archive/tts. Never cache-evicted." },
     disableThinking: { input: "boolean", label: "Auto-disable thinking on calls", description: "Turn the agent's thinking off for the duration of a voice call (lower latency); it reverts on hang-up." },
