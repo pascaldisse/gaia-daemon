@@ -664,6 +664,17 @@ mod webkit {
                         .initialization_script(&crate::debug_server::init_script())
                         // See open_window: needed for the tab strip's HTML5 drag-and-drop.
                         .disable_drag_drop_handler();
+                // Mobile reaches the Mac through a free ngrok tunnel, which puts an
+                // abuse interstitial (ERR_NGROK_6024) in front of any request whose
+                // User-Agent starts with "Mozilla" — i.e. stock WKWebView. A UA that
+                // does not lead with Mozilla passes (measured 10-08); "iPhone" kept
+                // for anything that sniffs the platform.
+                #[cfg(mobile)]
+                {
+                    main_window_builder = main_window_builder.user_agent(
+                        "GAIA-iOS/1 (iPhone; CPU iPhone OS like Mac OS X) AppleWebKit/605.1.15 Mobile",
+                    );
+                }
                 #[cfg(target_os = "macos")]
                 {
                     main_window_builder = main_window_builder
