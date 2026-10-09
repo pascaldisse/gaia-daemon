@@ -23,6 +23,8 @@ import { redirectProviderFetch } from "./tools.js";
 import { forwardPiEvent } from "./events.js";
 import { discoverUserGlobalExtensionPaths, filterUserGlobalExtensions } from "./extensions.js";
 import { createUiBridge } from "./ui-bridge.js";
+import { thinkingReplayExtension } from "./thinking-replay.js";
+import { withAdaptiveThinkingCompat } from "./model-compat.js";
 import { bindPiCommands, bindPiLifecycle, bindPiShortcuts, buildPiUiContext, wrapAuthInteraction } from "./ui-context.js";
 import {
   loadCleanCompactionOverride,
@@ -544,6 +546,8 @@ export class PiRuntime implements AgentRuntime {
           ),
         ),
         { name: "clean-compact", factory: this.cleanCompaction.extension(roomId) },
+        // Anthropic rejects replayed prior-turn thinking whose prefix was rewritten.
+        { name: "thinking-replay", factory: thinkingReplayExtension() },
       ],
       noSkills: true,
       noThemes: true,
@@ -613,7 +617,7 @@ export class PiRuntime implements AgentRuntime {
     // Resolved AFTER extension providers are flushed above — an extension can
     // register the very provider agent.json configures (see ordering comment
     // above); resolving earlier throws before it gets the chance.
-    const model = this.resolveModel();
+    const model = withAdaptiveThinkingCompat(this.resolveModel());
     const sessionDir = piRoomSessionDir(this.workspace, roomId, this.agent.id);
     const { session, modelFallbackMessage } = this.sessionFactory
       ? await this.sessionFactory({
